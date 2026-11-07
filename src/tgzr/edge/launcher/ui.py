@@ -6,6 +6,20 @@
   ``TGZR_CLIENT_NO_BROWSER=1`` and hands its one-time link back in its ready
   signal; this tab then navigates to the client (no new tab), and the
   launcher exits.
+* When the client is already running, this tab asks it for a new one-time
+  link (``ClientChain.request_link``) and goes there instead of failing.
+  Known clients that are running are marked so (refreshed every few
+  seconds); their buttons are **Browse** and **Stop** (SIGTERM, then
+  SIGKILL after a few seconds).
+* **Native window** (ticked unless ``--web``) starts the client in a native
+  window; unticked, in the browser.
+
+Native is the default (``--native``): the page itself is shown in a pywebview window that
+**stays open** (a dashboard over the home: it never supervises clients,
+which are detached and independent of it). Links to clients (a browser
+client, or Browse) open in the system browser. Several launchers may run at
+once: each launch of a chain is serialized by its ``launch.lock``. With
+``--web`` the page opens in the browser and closes after a launch.
 """
 
 from __future__ import annotations
@@ -24,17 +38,24 @@ from typing import Any
 from fastapi import FastAPI
 from nicegui import run, ui
 
-from tgzr.edge.home_manager import ClientChain, Home, HomeError, is_home
+from tgzr.edge.home_manager import ClientChain, Home, HomeError, NoLink, NoSuchProcess, is_home
 
-from tgzr.edge.launcher.core import LaunchError, LaunchResult, SpecOverrides, launch, select_chain
+from tgzr.edge.launcher.core import (
+    ClientAlreadyRunning,
+    LaunchError,
+    LaunchResult,
+    SpecOverrides,
+    client_env,
+    launch,
+    select_chain,
+)
 from tgzr.edge.launcher.guard import LaunchTokens, LocalAccessGuard
 from tgzr.edge.launcher.settings import LauncherSettings, load_settings
 
 log = logging.getLogger("tgzr.edge.launcher.ui")
 
 TITLE = "TGZR Launcher"
-# Ask the client for its link instead of a new browser tab.
-CLIENT_ENV = {"TGZR_CLIENT_NO_BROWSER": "1"}
+RUNNING_POLL = 2.0  # seconds: how often the known clients' running state is refreshed
 DEFAULT_CLIENT = "tgzr.edge.nice_client"
 
 
@@ -45,7 +66,11 @@ class LauncherState:
     on_done: Callable[[], None] = lambda: None
     launch_fn: Callable[..., LaunchResult] = launch
     navigate: Callable[[str], None] = field(default=lambda url: ui.navigate.to(url))  # this tab, not a new one
+    link_fn: Callable[[ClientChain], str] = field(default=lambda chain: chain.request_link())
+    stop_fn: Callable[[ClientChain], bool] = field(default=lambda chain: chain.stop())
+    stay_open: bool = False  # native: the page stays after a launch or a browse
     done: list[LaunchResult] = field(default_factory=list)
+    opened: list[str] = field(default_factory=list)  # links to clients found already running
 
     @property
     def home_path(self) -> Path:
@@ -118,6 +143,54 @@ def launch_page() -> None:
     s = st.settings
     status = ui.column().classes("w-full gap-1")
 
+    def show_error(text: str) -> None:
+        with status:
+            ui.label(text).classes("text-negative whitespace-pre-wrap").mark("launch-error")
+
+    async def open_running(chain: ClientChain, why: str) -> None:
+        """Navigate this tab to a running client, through a new one-time link."""
+        try:
+            url = await run.io_bound(st.link_fn, chain)
+        except NoLink as link_error:
+            show_error(f"{why}, but it gives no link: {link_error}")
+            return
+        with status:
+            where = "opened in your browser" if st.stay_open else "opening it..."
+            ui.label(f"{chain.slug} is running for {chain.org.url}: {where}").mark("launched")
+        st.opened.append(url)
+        st.navigate(url)
+        if not st.stay_open:
+            st.on_done()
+
+    async def do_browse(chain: ClientChain) -> None:
+        status.clear()
+        await open_running(chain, f"{chain.slug} is running for {chain.org.url}")
+
+    async def confirm_stop(chain: ClientChain) -> None:
+        # In ``status``, not in the known-clients list: its 2 s refresh would delete an open dialog.
+        with status, ui.dialog() as dialog, ui.card().classes("gap-3"):
+            ui.label(f"Stop {chain.slug} for {chain.org.name}?").classes("text-lg").mark("stop-question")
+            ui.label("Its window or page closes, and work not saved in it may be lost.").classes("opacity-70")
+            with ui.row().classes("w-full justify-end gap-2"):
+                ui.button("Cancel", on_click=lambda: dialog.submit(False)).props("flat").mark("stop-cancel")
+                ui.button("Stop", on_click=lambda: dialog.submit(True)).props("color=negative").mark("stop-confirm")
+        confirmed = await dialog
+        dialog.delete()
+        if confirmed:
+            await do_stop(chain)
+
+    async def do_stop(chain: ClientChain) -> None:
+        status.clear()
+        try:
+            stopped = await run.io_bound(st.stop_fn, chain)
+        except NoSuchProcess as e:
+            show_error(f"Could not stop it: {e}")
+            return
+        with status:
+            ui.label(f"{chain.slug} for {chain.org.url} {'stopped' if stopped else 'was not running'}.").mark(
+                "stopped")
+        known_clients.refresh()
+
     async def do_launch(org_url: str, client: str | None, overrides: SpecOverrides) -> None:
         status.clear()
         with status:
@@ -139,7 +212,11 @@ def launch_page() -> None:
             settings = load_settings(st.argv, focus=chain.path) if st.argv is not None else s
             result = await run.io_bound(st.launch_fn, home, chain, switch_to=None,
                                         ready_timeout=settings.ready_timeout, progress=progress,
-                                        client_env=CLIENT_ENV)
+                                        client_env=client_env(native=native.value, hand_over_link=True))
+        except ClientAlreadyRunning as e:
+            push()
+            await open_running(chain, str(e))
+            return
         except LaunchError as e:
             push()
             with status:
@@ -158,15 +235,23 @@ def launch_page() -> None:
         st.done.append(result)
         with status:
             if result.url:
-                ui.label(f"{chain.slug} is running for {chain.org.url}: opening it...").mark("launched")
-            else:  # a native window, or a client that already finished
-                ui.label(f"{chain.slug} is running for {chain.org.url}. This launcher closes now.").mark("launched")
+                where = "opened in your browser" if st.stay_open else "opening it..."
+                ui.label(f"{chain.slug} is running for {chain.org.url}: {where}").mark("launched")
+            elif result.exited:
+                ui.label(f"{chain.slug} for {chain.org.url} ran and finished.").mark("launched")
+            else:  # a native window
+                closes = "" if st.stay_open else " This launcher closes now."
+                ui.label(f"{chain.slug} is running for {chain.org.url}.{closes}").mark("launched")
         if result.url:
             st.navigate(result.url)
-        st.on_done()
+        if st.stay_open:
+            known_clients.refresh()
+        else:
+            st.on_done()
 
     with ui.card().classes("w-full gap-2"):
         ui.label("Launch a client").classes("text-xl")
+        native = ui.checkbox("Native window (otherwise the browser)", value=s.use_native).mark("native")
         org = ui.input("Org URL", value=s.org or "", placeholder="https://org.example.com").classes("w-full").mark(
             "org-url")
         client = ui.input("Client", value=s.client or DEFAULT_CLIENT).classes("w-full").mark("client")
@@ -195,29 +280,72 @@ def launch_page() -> None:
 
         ui.button("Launch", on_click=from_form).props("color=primary").mark("launch")
 
-    chains: list[ClientChain] = [c for o in home.orgs() for c in o.clients() if c.spec is not None]
-    if chains:
+    shown: dict[str, list[tuple[str, bool]]] = {"snapshot": []}
+
+    def known() -> list[ClientChain]:
+        return [c for o in home.orgs() for c in o.clients() if c.spec is not None]
+
+    def snapshot(chains: list[ClientChain]) -> list[tuple[str, bool]]:
+        return [(f"{c.org.slug}/{c.slug}", c.is_running()) for c in chains]
+
+    @ui.refreshable
+    def known_clients() -> None:
+        chains = known()  # other launchers may add chains
+        snap = snapshot(chains)
+        shown["snapshot"] = snap
+        states = [running for _, running in snap]
+        if not chains:
+            return
         with ui.card().classes("w-full gap-2"):
             ui.label("Known clients").classes("text-xl")
-            for c in chains:
+            for c, running in zip(chains, states, strict=True):
                 cur = c.current_number()
-                with ui.row().classes("w-full items-center justify-between").mark(f"chain-{c.org.slug}-{c.slug}"):
+                key = f"{c.org.slug}-{c.slug}"
+                with ui.row().classes("w-full items-center justify-between").mark(f"chain-{key}"):
                     with ui.column().classes("gap-0"):
-                        ui.label(f"{c.org.name}").classes("font-medium")
-                        ui.label(f"{c.slug} · venv {cur if cur is not None else '-'}"
-                                 + (" · running" if c.is_running() else "")).classes("opacity-70 text-sm")
+                        with ui.row().classes("items-center gap-2"):
+                            ui.label(f"{c.org.name}").classes("font-medium")
+                            if running:
+                                ui.chip("running", icon="play_circle", color="positive").props(
+                                    "dense outline").mark(f"running-{key}")
+                        ui.label(f"{c.slug} · venv {cur if cur is not None else '-'}").classes("opacity-70 text-sm")
 
-                    def make(chain: ClientChain = c) -> Callable[[], Any]:
+                    def make(chain: ClientChain = c, is_running: bool = running) -> Callable[[], Any]:
+                        if is_running:
+                            return lambda: do_browse(chain)
                         return lambda: do_launch(chain.org.url, chain.slug, SpecOverrides())
 
-                    ui.button("Launch", on_click=make()).props("flat").mark(f"launch-{c.org.slug}-{c.slug}")
+                    if running:
+                        with ui.row().classes("gap-1"):
+                            ui.button("Browse", on_click=make()).props("flat").mark(f"browse-{key}")
+                            ui.button("Stop", on_click=lambda chain=c: confirm_stop(chain)).props(
+                                "flat color=negative").mark(f"stop-{key}")
+                    else:
+                        ui.button("Launch", on_click=make()).props("flat").mark(f"launch-{key}")
+
+    def refresh_if_changed() -> None:
+        if snapshot(known()) != shown["snapshot"]:
+            known_clients.refresh()
+
+    known_clients()
+    ui.timer(RUNNING_POLL, refresh_if_changed)
     ui.label(f"Home: {home.path}").classes("opacity-60 text-sm").mark("home")
     status.move(target_index=-1)
 
 
 def run_ui(argv: Sequence[str] | None, settings: LauncherSettings) -> int:
-    """Serve the page until a launch succeeds (exit 0) or the user stops it."""
+    """Serve the page until a launch succeeds (exit 0) or the user stops it
+    (closes the native window, or Ctrl-C)."""
     import uvicorn
+
+    webview: Any = None
+    if settings.use_native:
+        try:
+            import webview  # pyright: ignore[reportMissingImports]
+        except ImportError:
+            print("tgzr.edge.launcher: native windows need pywebview (pip install 'pywebview[qt]'), "
+                  "or use --web", file=sys.stderr)
+            return 1
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind(("127.0.0.1", settings.port))
@@ -225,7 +353,7 @@ def run_ui(argv: Sequence[str] | None, settings: LauncherSettings) -> int:
     tokens = LaunchTokens()
     server: uvicorn.Server | None = None
 
-    def done() -> None:
+    def done() -> None:  # browser mode only: native stays open
         def later() -> None:
             time.sleep(1.5)  # let the page show the result
             if server is not None:
@@ -234,6 +362,9 @@ def run_ui(argv: Sequence[str] | None, settings: LauncherSettings) -> int:
         threading.Thread(target=later, daemon=True).start()
 
     st = LauncherState(settings=settings, argv=list(argv) if argv is not None else sys.argv[1:], on_done=done)
+    if settings.use_native:
+        st.stay_open = True
+        st.navigate = webbrowser.open  # the window stays a launcher: clients open in the system browser
     app = create_app(st, launch_tokens=tokens, allowed_hosts={f"127.0.0.1:{port}"},
                      cookie_name=f"tgzr.edge.launcher_{port}")
     server = uvicorn.Server(uvicorn.Config(app, log_level="warning"))
@@ -249,6 +380,19 @@ def run_ui(argv: Sequence[str] | None, settings: LauncherSettings) -> int:
         else:
             webbrowser.open(url)
 
+    if webview is not None:
+        thread = threading.Thread(target=server.run, kwargs={"sockets": [sock]}, daemon=True)
+        thread.start()
+        while not server.started:
+            if not thread.is_alive():
+                print("tgzr.edge.launcher: the local server failed to start", file=sys.stderr)
+                return 1
+            time.sleep(0.05)
+        webview.create_window(TITLE, url, width=900, height=820)
+        webview.start()  # until the user closes the window
+        server.should_exit = True
+        thread.join(timeout=5)
+        return 0
     threading.Thread(target=opened, daemon=True).start()
     server.run(sockets=[sock])
-    return 0 if st.done else 1
+    return 0 if st.done or st.opened else 1

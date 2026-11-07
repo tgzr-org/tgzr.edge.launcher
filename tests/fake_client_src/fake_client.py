@@ -23,7 +23,7 @@ except OSError:
     print("already running", file=sys.stderr)
     sys.exit(3)
 print(f"fake client venv={venv.name} behavior={behavior} org={os.environ['TGZR_ORG']} "
-      f"launcher={os.environ.get('TGZR_LAUNCHER')}", flush=True)
+      f"launcher={os.environ.get('TGZR_LAUNCHER')} native={os.environ.get('TGZR_CLIENT_NATIVE')}", flush=True)
 if behavior == "crash":
     sys.exit(2)
 if behavior == "exit0":

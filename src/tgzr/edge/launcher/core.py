@@ -33,6 +33,7 @@ from tgzr.edge.home_manager import (
     ClientSpec,
     Home,
     InstanceInfo,
+    LaunchInProgress,
     NoSuchVenv,
     Venv,
     spawn_detached,
@@ -41,6 +42,7 @@ from tgzr.edge.home_manager import (
 
 EXIT_FAILED = 1
 EXIT_ALREADY_RUNNING = 3  # also what a client exits with when its instance lock is held
+LAUNCH_LOCK_TIMEOUT = 900.0  # seconds: another launcher of the chain may be building its first venv
 POLL = 0.2
 
 Progress = Callable[[str], None]
@@ -84,6 +86,17 @@ class LaunchResult:
     exited: bool  # the client finished (exit code 0) before reporting ready
     fell_back: bool  # a failing venv was replaced by the previous working one
     url: str | None = None  # the client's one-time link, when it did not open a browser itself
+
+
+def client_env(*, native: bool = True, hand_over_link: bool = False) -> dict[str, str]:
+    """Environment variables for the client: its window mode (both
+    variables, so they also override a ``.env`` saying the opposite), and,
+    for a web client, its one-time link in the ready signal instead of a new
+    browser tab (``hand_over_link``)."""
+    env = {"TGZR_CLIENT_NATIVE": "1" if native else "0", "TGZR_CLIENT_WEB": "0" if native else "1"}
+    if hand_over_link and not native:
+        env["TGZR_CLIENT_NO_BROWSER"] = "1"
+    return env
 
 
 def launcher_command() -> list[str]:
@@ -193,17 +206,43 @@ def launch(
     ready_timeout: float = 60.0,
     progress: Progress = lambda msg: None,
     client_env: Mapping[str, str] | None = None,
+    lock_timeout: float = LAUNCH_LOCK_TIMEOUT,
 ) -> LaunchResult:
     """``client_env``: more environment variables for the client, e.g.
     ``TGZR_CLIENT_NO_BROWSER=1`` to get its link in the result instead of a
-    new browser tab."""
+    new browser tab.
+
+    Everything from the "already running?" check to the ready signal (or the
+    failure) happens under the chain's ``launch.lock``: another launcher of
+    the same chain waits up to ``lock_timeout`` seconds, then usually finds
+    the client running."""
+    try:
+        lock = chain.launch_lock()
+    except LaunchInProgress:
+        progress(f"waiting for another launch of {chain.slug} for {chain.org.url}")
+        try:
+            lock = chain.launch_lock(timeout=lock_timeout)
+        except LaunchInProgress as e:
+            raise LaunchError(f"{e} (waited {lock_timeout:.0f}s)") from e
+    with lock:
+        return _launch_locked(home, chain, switch_to, ready_timeout, progress, client_env or {})
+
+
+def _launch_locked(
+    home: Home,
+    chain: ClientChain,
+    switch_to: int | None,
+    ready_timeout: float,
+    progress: Progress,
+    client_env: Mapping[str, str],
+) -> LaunchResult:
     if chain.is_running():
         raise ClientAlreadyRunning(f"{chain.slug} is already running for {chain.org.url}")
     venv = _choose(chain, switch_to, progress)
     fell_back = False
     while True:
         progress(f"starting {chain.slug} from venv {venv.number}")
-        proc = _start(chain, venv, home, client_env or {})
+        proc = _start(chain, venv, home, client_env)
         try:
             ready = wait_ready(chain, proc, venv, ready_timeout)
             break

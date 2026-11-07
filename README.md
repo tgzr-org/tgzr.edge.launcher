@@ -25,8 +25,23 @@ uv run tgzr.edge.launcher --home-dir /tmp/th --org http://127.0.0.1:8000 --clien
   > default): `--home-dir` (or `TGZR_HOME`, never from `.env`),
   `--create-home`, `--org`, `--client`, `--client-version`, `--extra`,
   `--index-url`, `--find-links`, `--editable` (repeatable), `--headless`,
+  `--native` (the default: this page in a native window that stays open, and
+  the clients it starts in native windows too; links to browser clients open
+  in the system browser) or `--web` (this page in the browser, and web
+  clients; giving both is an error),
   `--switch-to N`, `--wait-pid PID`, `--wait-pid-timeout`, `--ready-timeout`
   (60 s), `--port`, `--no-browser`.
+- **The page**: a launch form (with a *Native window* checkbox) and the known
+  clients. A running client is marked *running* and has **Browse** (this tab
+  opens it through a new one-time link) and **Stop** (after a confirmation; SIGTERM, then SIGKILL
+  after 10 s). The list follows changes made elsewhere (every 2 s). In the
+  browser, launching navigates the tab to the client and the launcher exits;
+  in the native window, the launcher stays open. A client found already
+  running is opened instead.
+- **Several launchers may run at once.** Each launch of an (org, client) holds
+  its `launch.lock` from the "already running?" check until the client is
+  ready or failed; another launcher waits (up to 15 min: it may be building
+  the first venv), then finds the client running.
 - The first launch saves the client spec in `client.json`; later launches
   reuse it, and flags given again override it.
 - **Exit codes**: 0 launched (or the client finished with 0), 1 failed (the

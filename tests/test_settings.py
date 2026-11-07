@@ -38,3 +38,5 @@ def test_repeatable_flags(home):
 def test_negative_sounding_flags(home):
     assert load_settings(["--no-browser", "--create-home"]).no_browser
     assert not load_settings([]).no_browser
+    assert load_settings([]).use_native and load_settings(["--native"]).use_native  # native by default
+    assert not load_settings(["--web"]).use_native

@@ -14,12 +14,14 @@ import logging
 import sys
 from collections.abc import Sequence
 
+from pydantic import ValidationError
 from tgzr.edge.home_manager import Home, HomeError, is_home
 
 from tgzr.edge.launcher.core import (
     EXIT_FAILED,
     LaunchError,
     SpecOverrides,
+    client_env,
     launch,
     select_chain,
     wait_for,
@@ -57,7 +59,8 @@ def run_headless(argv: Sequence[str] | None, settings: LauncherSettings) -> int:
     chain = select_chain(home, settings.org, settings.client, overrides_from(settings))
     # Settings again, from the chain folder's closest .env.
     settings = load_settings(argv, focus=chain.path)
-    result = launch(home, chain, switch_to=settings.switch_to, ready_timeout=settings.ready_timeout, progress=_say)
+    result = launch(home, chain, switch_to=settings.switch_to, ready_timeout=settings.ready_timeout, progress=_say,
+                    client_env=client_env(native=settings.use_native))
     if result.fell_back:
         _say(f"the chosen venv failed; running venv {result.venv.number} instead")
     return 0
@@ -65,7 +68,11 @@ def run_headless(argv: Sequence[str] | None, settings: LauncherSettings) -> int:
 
 def main(argv: Sequence[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
-    settings = load_settings(argv)
+    try:
+        settings = load_settings(argv)
+    except ValidationError as e:
+        _say(f"error: {'; '.join(err['msg'].removeprefix('Value error, ') for err in e.errors())}")
+        sys.exit(EXIT_FAILED)
     if not settings.headless:
         from tgzr.edge.launcher.ui import run_ui
 

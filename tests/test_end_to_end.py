@@ -25,7 +25,8 @@ ORG = "https://org.invalid"
 def _launcher(home: Path, *args: str) -> subprocess.CompletedProcess:
     env = {k: v for k, v in os.environ.items() if not k.startswith("TGZR_") and k != "VIRTUAL_ENV"}
     env["TGZR_CLIENT_NO_BROWSER"] = "1"
-    return subprocess.run([sys.executable, "-m", "tgzr.edge.launcher", "--headless", "--home-dir", str(home), *args],
+    return subprocess.run([sys.executable, "-m", "tgzr.edge.launcher", "--headless", "--web", "--home-dir", str(home),
+                           *args],
                           capture_output=True, text=True, timeout=900, env=env)
 
 
@@ -52,6 +53,7 @@ def test_build_launch_switch(tmp_path):
     try:
         again = _launcher(home_dir, "--org", ORG)
         assert again.returncode == 3 and "already running" in again.stderr
+        assert chain.request_link().startswith(f"http://127.0.0.1:{info.port}/?launch=")  # what the UI then opens
 
         # What the client's Update does: build the next venv; then its Restart.
         spec = chain.spec
@@ -59,7 +61,7 @@ def test_build_launch_switch(tmp_path):
         assert venv2.number == 2
         old = info.pid
         switch = subprocess.Popen(
-            [sys.executable, "-m", "tgzr.edge.launcher", "--headless", "--home-dir", str(home_dir), "--org", ORG,
+            [sys.executable, "-m", "tgzr.edge.launcher", "--headless", "--web", "--home-dir", str(home_dir), "--org", ORG,
              "--client", "tgzr.edge.nice_client", "--switch-to", "2", "--wait-pid", str(old), "--ready-timeout", "120"],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             env={**{k: v for k, v in os.environ.items() if not k.startswith("TGZR_")}, "TGZR_CLIENT_NO_BROWSER": "1"},

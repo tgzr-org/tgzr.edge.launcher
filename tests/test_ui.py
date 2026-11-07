@@ -11,7 +11,9 @@ from nicegui.testing.user import User
 
 from tgzr.edge.home_manager import ClientSpec, Home, Venv
 
-from tgzr.edge.launcher.core import LaunchError, LaunchResult
+from tgzr.edge.home_manager import NoLink
+
+from tgzr.edge.launcher.core import ClientAlreadyRunning, LaunchError, LaunchResult
 from tgzr.edge.launcher.guard import LaunchTokens
 from tgzr.edge.launcher.settings import LauncherSettings
 from tgzr.edge.launcher.ui import LauncherState, create_app
@@ -37,10 +39,10 @@ class FakeLaunch:
 
 
 @asynccontextmanager
-async def launcher_env(tmp_path, home_dir, launch_fn):
+async def launcher_env(tmp_path, home_dir, launch_fn, *, web: bool = True):
     os.environ["NICEGUI_USER_SIMULATION"] = "true"
     done: list[int] = []
-    st = LauncherState(settings=LauncherSettings(home_dir=home_dir), argv=None, on_done=lambda: done.append(1),
+    st = LauncherState(settings=LauncherSettings(home_dir=home_dir, web=web), argv=None, on_done=lambda: done.append(1),
                        launch_fn=launch_fn)
     st.navigated = []  # type: ignore[attr-defined]
     st.navigate = st.navigated.append  # type: ignore[attr-defined]
@@ -79,7 +81,8 @@ async def test_launch_from_the_form(tmp_path):
         user.find(marker="launch").click()
         await user.should_see(marker="launched", retries=50)
         assert fake.calls == [(ORG, "tgzr.edge.nice_client")] and done == [1]
-        assert fake.client_envs == [{"TGZR_CLIENT_NO_BROWSER": "1"}]  # the client hands its link back
+        assert fake.client_envs == [{"TGZR_CLIENT_NATIVE": "0", "TGZR_CLIENT_WEB": "1",
+                                     "TGZR_CLIENT_NO_BROWSER": "1"}]  # a web client hands its link back
         assert st.navigated == ["http://127.0.0.1:5555/?launch=tok"]  # this tab goes there
         assert home.org(ORG).client("tgzr.edge.nice_client").spec.version == ">=0.1,<1"
 
@@ -104,3 +107,121 @@ async def test_known_chains_launch_and_errors_show_the_log(tmp_path):
         await user.should_see(marker="launch-error", retries=50)
         await user.should_see(marker="log-path")
         assert fake.calls == [(ORG, "tgzr.edge.nice_client")] and done == [] and st.navigated == []
+
+
+async def test_already_running_opens_the_running_client(tmp_path):
+    home = Home.create(tmp_path / "h")
+    fake = FakeLaunch(ClientAlreadyRunning("tgzr.edge.nice_client is already running for https://org.test"))
+    async with launcher_env(tmp_path, home.path, fake) as (user, st, done):
+        asked = []
+        st.link_fn = lambda chain: asked.append(chain.slug) or "http://127.0.0.1:6666/?launch=again"
+        await user.open("/")
+        user.find(marker="org-url").type(ORG)
+        user.find(marker="launch").click()
+        await user.should_see("is running for https://org.test: opening it", retries=50)
+        await user.should_not_see(marker="launch-error")
+        assert asked == ["tgzr.edge.nice_client"]
+        assert st.navigated == ["http://127.0.0.1:6666/?launch=again"] and done == [1]
+        assert st.opened == ["http://127.0.0.1:6666/?launch=again"]
+
+
+async def test_already_running_without_a_link_says_why(tmp_path):
+    home = Home.create(tmp_path / "h")
+    fake = FakeLaunch(ClientAlreadyRunning("tgzr.edge.nice_client is already running for https://org.test"))
+    async with launcher_env(tmp_path, home.path, fake) as (user, st, done):
+        def no_link(chain):
+            raise NoLink("connection refused")
+
+        st.link_fn = no_link
+        await user.open("/")
+        user.find(marker="org-url").type(ORG)
+        user.find(marker="launch").click()
+        await user.should_see(marker="launch-error", retries=50)
+        await user.should_see("but it gives no link: connection refused")
+        assert st.navigated == [] and done == []
+
+
+async def test_native_checkbox(tmp_path):
+    home = Home.create(tmp_path / "h")
+    fake = FakeLaunch()
+    async with launcher_env(tmp_path, home.path, fake) as (user, st, done):
+        await user.open("/")
+        user.find(marker="org-url").type(ORG)
+        user.find(marker="native").click()
+        user.find(marker="launch").click()
+        await user.should_see(marker="launched", retries=50)
+        assert fake.client_envs == [{"TGZR_CLIENT_NATIVE": "1", "TGZR_CLIENT_WEB": "0"}]
+
+
+async def test_native_launcher_ticks_native_by_default(tmp_path):
+    home = Home.create(tmp_path / "h")
+    async with launcher_env(tmp_path, home.path, FakeLaunch(), web=False) as (user, st, done):
+        await user.open("/")
+        assert user.find(marker="native").elements.pop().value is True
+
+
+async def test_running_known_client_shows_browse_and_stop(tmp_path):
+    home = Home.create(tmp_path / "h")
+    chain = home.add_org(ORG, name="Acme").client("tgzr.edge.nice_client")
+    chain.save_spec(ClientSpec("tgzr.edge.nice_client"))
+    key = f"{chain.org.slug}-{chain.slug}"
+    held = chain.instance_lock()  # the client is running
+    try:
+        async with launcher_env(tmp_path, home.path, FakeLaunch()) as (user, st, done):
+            stops = []
+
+            def fake_stop(c):
+                stops.append(c.slug)
+                held.release()
+                return True
+
+            st.stop_fn = fake_stop
+            st.link_fn = lambda c: "http://127.0.0.1:7777/?launch=b"
+            await user.open("/")
+            await user.should_see(marker=f"running-{key}")
+            await user.should_see(marker=f"browse-{key}")
+            await user.should_not_see(marker=f"launch-{key}")
+            user.find(marker=f"stop-{key}").click()
+            await user.should_see("Stop tgzr.edge.nice_client for Acme?", retries=20)
+            user.find(marker="stop-cancel").click()  # changed my mind
+            await user.should_not_see(marker="stop-question", retries=20)
+            assert stops == [] and chain.is_running()
+            user.find(marker=f"stop-{key}").click()
+            await user.should_see(marker="stop-question", retries=20)
+            user.find(marker="stop-confirm").click()
+            await user.should_see(marker="stopped", retries=50)
+            assert stops == ["tgzr.edge.nice_client"]
+            await user.should_see(marker=f"launch-{key}", retries=50)  # not running any more
+            await user.should_not_see(marker=f"running-{key}")
+            # It runs again (started elsewhere): the list follows within a few seconds.
+            held = chain.instance_lock()
+            await user.should_see(marker=f"browse-{key}", retries=50)
+            user.find(marker=f"browse-{key}").click()
+            await user.should_see(marker="launched", retries=50)
+            assert st.navigated == ["http://127.0.0.1:7777/?launch=b"] and done == [1]
+    finally:
+        held.release()
+
+
+async def test_stay_open_keeps_the_page_and_lists_the_new_client(tmp_path):
+    home = Home.create(tmp_path / "h")
+    fake = FakeLaunch()
+    async with launcher_env(tmp_path, home.path, fake) as (user, st, done):
+        st.stay_open = True
+        await user.open("/")
+        await user.should_not_see("Known clients")
+        user.find(marker="org-url").type(ORG)
+        user.find(marker="launch").click()
+        await user.should_see("opened in your browser", retries=50)
+        assert st.navigated == ["http://127.0.0.1:5555/?launch=tok"] and done == []  # not closing
+        await user.should_see("Known clients", retries=50)  # the new chain is listed
+
+
+async def test_chains_added_by_another_launcher_appear(tmp_path):
+    home = Home.create(tmp_path / "h")
+    async with launcher_env(tmp_path, home.path, FakeLaunch()) as (user, st, done):
+        await user.open("/")
+        await user.should_not_see("Known clients")
+        chain = home.add_org(ORG, name="Acme").client("tgzr.edge.nice_client")
+        chain.save_spec(ClientSpec("tgzr.edge.nice_client"))
+        await user.should_see(marker=f"launch-{chain.org.slug}-{chain.slug}", retries=50)

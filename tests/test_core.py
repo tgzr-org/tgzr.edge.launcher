@@ -181,3 +181,76 @@ def test_headless_errors(tmp_path, home):
             "--find-links", str(tmp_path / "nowheels"), "--index-url", "https://invalid.invalid/simple")
     assert r.returncode == 1 and "created the tgzr home" in r.stderr and "could not build" in r.stderr
     assert json.loads((tmp_path / "new" / "tgzr_home.json").read_text())["layout"] == 1
+
+
+def test_stop_a_running_client(home, chain, clients):
+    fake_venv(chain, 1)
+    r = launch(home, chain, ready_timeout=20)
+    clients.add(r.pid)
+    assert chain.is_running()
+    assert chain.stop(timeout=5) is True
+    assert not chain.is_running() and not pid_alive(r.pid)
+    assert chain.stop() is False
+
+
+@pytest.mark.parametrize(("flags", "native"), [((), "1"), (("--native",), "1"), (("--web",), "0")])
+def test_headless_window_mode(home, chain, clients, flags, native):
+    fake_venv(chain, 1)
+    res = subprocess.run(
+        [sys.executable, "-m", "tgzr.edge.launcher", "--headless", *flags, "--home-dir", str(home.path),
+         "--org", ORG, "--client", "fake_client", "--ready-timeout", "20"],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert res.returncode == 0, res.stderr
+    clients.add(chain.read_instance().pid)
+    assert f"native={native}" in (chain.logs_dir / "client-1.log").read_text()
+
+
+def test_native_and_web_together_is_an_error(home):
+    res = subprocess.run([sys.executable, "-m", "tgzr.edge.launcher", "--headless", "--native", "--web",
+                          "--home-dir", str(home.path)], capture_output=True, text=True, timeout=60)
+    assert res.returncode == 1 and "give --native or --web, not both" in res.stderr
+
+
+def test_client_env():
+    from tgzr.edge.launcher.core import client_env
+
+    assert client_env() == {"TGZR_CLIENT_NATIVE": "1", "TGZR_CLIENT_WEB": "0"}
+    assert client_env(native=True, hand_over_link=True) == {"TGZR_CLIENT_NATIVE": "1", "TGZR_CLIENT_WEB": "0"}
+    assert client_env(native=False, hand_over_link=True) == {"TGZR_CLIENT_NATIVE": "0", "TGZR_CLIENT_WEB": "1",
+                                                              "TGZR_CLIENT_NO_BROWSER": "1"}
+
+
+def test_concurrent_launches_of_one_chain(home, chain, clients):
+    """Two launchers at once: one starts the client, the other waits for the
+    launch lock, then finds it running (no deleted ready file, no venv marked
+    failing)."""
+    fake_venv(chain, 1)
+    results: dict[str, object] = {}
+
+    def run(name: str) -> None:
+        try:
+            results[name] = launch(home, chain, ready_timeout=20)
+        except Exception as e:  # noqa: BLE001
+            results[name] = e
+
+    threads = [threading.Thread(target=run, args=(n,)) for n in ("a", "b")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(60)
+    ok = [r for r in results.values() if not isinstance(r, Exception)]
+    errors = [r for r in results.values() if isinstance(r, Exception)]
+    assert len(ok) == 1 and len(errors) == 1, results
+    clients.add(ok[0].pid)
+    assert isinstance(errors[0], ClientAlreadyRunning)
+    assert chain.names() == ["1"] and chain.read_instance().pid == ok[0].pid
+
+
+def test_launch_lock_timeout(home, chain):
+    fake_venv(chain, 1)
+    messages = []
+    with chain.launch_lock():  # another launcher is busy with this chain
+        with pytest.raises(LaunchError, match="in progress"):
+            launch(home, chain, ready_timeout=20, lock_timeout=0.3, progress=messages.append)
+    assert messages == [f"waiting for another launch of fake_client for {ORG}"]
