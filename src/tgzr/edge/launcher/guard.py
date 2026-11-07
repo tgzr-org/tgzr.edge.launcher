@@ -108,9 +108,11 @@ class LocalAccessGuard:
         target = scope.get("path", "/") or "/"
         if query:
             target += "?" + urllib.parse.urlencode(query, doseq=True)
+        # Escape "<" so the target can never close the <script> element.
+        script_target = json.dumps(target).replace("<", "\\u003c")
         body = (
             f"<!doctype html><meta charset=utf-8><title>{html.escape(self.app_name)}</title>"
-            f"<script>location.replace({json.dumps(target).replace('<', '\\u003c')})</script>"
+            f"<script>location.replace({script_target})</script>"
         ).encode()
         cookie = f"{self.cookie_name}={self.secret}; HttpOnly; SameSite=Strict; Path=/"
         await send({
