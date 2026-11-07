@@ -96,3 +96,7 @@ src/tgzr/edge/launcher/_version.py
 
 # The development workspace (../../workspace_dev) holds the lockfile
 uv.lock
+
+# PyApp executable builds (packaging/pyapp/build.py)
+build-exe/
+dist-exe/

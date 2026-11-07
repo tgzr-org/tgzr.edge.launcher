@@ -5,13 +5,12 @@ description = "TGZR launcher: builds a client's venv for an org, starts the clie
 readme = "README.md"
 requires-python = ">=3.11"
 license-files = ["LICENSE"]
-# uv must be on PATH (it builds the client venvs); it is not a Python dependency.
 dependencies = [
     "nicegui>=3.19,<4",
     "pywebview[qt]>=5",  # --native: the launcher's page in a desktop window
     "pydantic-settings>=2.16",
     "tgzr.edge.home_manager>=0.1",
-    "tgzr.libs.package_management>=0.1",
+    "tgzr.libs.package_management>=0.101",
 ]
 
 [project.urls]

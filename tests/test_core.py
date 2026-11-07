@@ -254,3 +254,14 @@ def test_launch_lock_timeout(home, chain):
         with pytest.raises(LaunchError, match="in progress"):
             launch(home, chain, ready_timeout=20, lock_timeout=0.3, progress=messages.append)
     assert messages == [f"waiting for another launch of fake_client for {ORG}"]
+
+
+def test_launcher_command_is_the_pyapp_executable(tmp_path, monkeypatch):
+    from tgzr.edge.launcher.core import launcher_command
+
+    exe = tmp_path / "tgzr-launcher"
+    exe.write_text("")
+    monkeypatch.setenv("PYAPP", str(exe))
+    assert launcher_command() == [str(exe)]
+    monkeypatch.setenv("PYAPP", "1")  # PyApp without PYAPP_PASS_LOCATION: not a path
+    assert launcher_command() == [sys.executable, "-m", "tgzr.edge.launcher"]

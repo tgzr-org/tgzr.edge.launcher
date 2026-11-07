@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -100,7 +101,14 @@ def client_env(*, native: bool = True, hand_over_link: bool = False) -> dict[str
 
 
 def launcher_command() -> list[str]:
-    """How a client can run this launcher again (``TGZR_LAUNCHER``)."""
+    """How a client can run this launcher again (``TGZR_LAUNCHER``).
+
+    Run from the one-file executable (PyApp, built with
+    ``PYAPP_PASS_LOCATION``), that is the executable itself: ``PYAPP`` holds
+    its path."""
+    pyapp = os.environ.get("PYAPP", "")
+    if pyapp and Path(pyapp).is_file():
+        return [pyapp]
     if getattr(sys, "frozen", False):
         return [sys.executable]
     return [sys.executable, "-m", "tgzr.edge.launcher"]

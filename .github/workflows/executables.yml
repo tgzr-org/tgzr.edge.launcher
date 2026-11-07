@@ -1,0 +1,70 @@
+# One-file launcher executables (PyApp), attached to the GitHub release of the tag.
+# Upload the same version to the package index first: the executable installs
+# exactly tgzr.edge.launcher==<version> from it on its first run.
+name: executables
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Launcher version to build (must be on the index), e.g. 0.101"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        # ubuntu-22.04: an older glibc, so the binary runs on more distributions.
+        os: [ubuntu-22.04, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Version
+        id: version
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then v="${{ inputs.version }}"; else v="${GITHUB_REF_NAME#v}"; fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - name: Build
+        run: python packaging/pyapp/build.py --version ${{ steps.version.outputs.version }} --out dist-exe
+      - uses: actions/upload-artifact@v4
+        with:
+          name: executable-${{ matrix.os }}
+          path: dist-exe/*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist-exe
+          merge-multiple: true
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then tag="v${{ inputs.version }}"; else tag="$GITHUB_REF_NAME"; fi
+          ls -l dist-exe
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist-exe/* --clobber
+          else
+            gh release create "$tag" dist-exe/* --title "$tag" \
+              --notes "One-file launcher executables (PyApp). On first run they install tgzr.edge.launcher==${tag#v} from the package index."
+          fi

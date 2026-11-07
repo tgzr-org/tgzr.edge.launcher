@@ -49,7 +49,33 @@ uv run tgzr.edge.launcher --home-dir /tmp/th --org http://127.0.0.1:8000 --clien
 - The client gets `TGZR_HOME`, `TGZR_ORG`, `TGZR_CLIENT` and `TGZR_LAUNCHER`,
   so it can restart itself through the launcher after an update.
 
-uv must be on `PATH`.
+uv comes with `tgzr.libs.package_management` (the `uv` package); set
+`TGZR_UV` to use another one.
+
+## Executable
+
+`packaging/pyapp/build.py` builds a one-file executable with
+[PyApp](https://ofek.dev/pyapp/): a small stub that, on its first run,
+downloads Python, installs `tgzr.edge.launcher==<version>` from the package
+index baked into it (with uv), then runs `python -m tgzr.edge.launcher`. Later
+runs start directly. Clients restart the launcher through the executable
+(`PYAPP` holds its path).
+
+```bash
+python packaging/pyapp/build.py --version 0.101      # needs cargo; writes dist-exe/
+python packaging/pyapp/build.py --help               # --index-url, --find-links, --python, --pyapp-version
+```
+
+- The executable installs exactly `--version` from `--index-url` (default
+  `http://pi.alpha.tgzr.net/tgzr/beta/+simple/`), so **upload that version to
+  the index first**.
+- On Windows it is built as a GUI program (no console window).
+- Its install lives in PyApp's per-user data folder; `PYAPP_INSTALL_DIR_TGZR-EDGE-LAUNCHER`
+  (set with `env`: the name has dashes) moves it. `<exe> self remove` deletes it, `<exe> self restore` reinstalls.
+- **CI:** pushing a `v*` tag runs `.github/workflows/executables.yml`, which
+  builds Linux and Windows x86_64 executables and attaches them to the GitHub
+  release of that tag. The repository is private, so download them from the
+  release and host them where users can get them.
 
 ## Tests
 
