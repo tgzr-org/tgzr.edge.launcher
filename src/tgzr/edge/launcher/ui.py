@@ -260,7 +260,9 @@ def launch_page() -> None:
         with ui.expansion("Advanced").classes("w-full"):
             extras = ui.textarea("More requirements (one per line)", value="\n".join(s.extra)).classes(
                 "w-full").mark("extras")
-            indexes = ui.textarea("Package indexes (one per line; default PyPI)", value="\n".join(s.index_url)).classes(
+            default_index = s.default_index_url.strip() or "PyPI"
+            indexes = ui.textarea(f"Package indexes (one per line; empty: {default_index})",
+                                  value="\n".join(s.index_url)).classes(
                 "w-full").mark("indexes")
             find_links = ui.textarea("Local wheel folders (one per line)", value="\n".join(s.find_links)).classes(
                 "w-full").mark("find-links")
@@ -276,7 +278,8 @@ def launch_page() -> None:
             await do_launch(org.value.strip(), client.value.strip(), SpecOverrides(
                 package=client.value.strip(), version=version.value.strip() or None, extras=_lines(extras.value),
                 index_urls=_lines(indexes.value), find_links=_lines(find_links.value),
-                editable=_lines(editable.value)))
+                editable=_lines(editable.value),
+                default_index_urls=tuple(s.effective_index_urls) if not _lines(indexes.value) else ()))
 
         ui.button("Launch", on_click=from_form).props("color=primary").mark("launch")
 

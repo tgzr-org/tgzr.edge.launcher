@@ -37,6 +37,7 @@ def overrides_from(settings: LauncherSettings) -> SpecOverrides:
         index_urls=tuple(settings.index_url),
         find_links=tuple(settings.find_links),
         editable=tuple(settings.editable),
+        default_index_urls=() if settings.index_url else tuple(settings.effective_index_urls),
     )
 
 

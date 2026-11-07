@@ -265,3 +265,20 @@ def test_launcher_command_is_the_pyapp_executable(tmp_path, monkeypatch):
     assert launcher_command() == [str(exe)]
     monkeypatch.setenv("PYAPP", "1")  # PyApp without PYAPP_PASS_LOCATION: not a path
     assert launcher_command() == [sys.executable, "-m", "tgzr.edge.launcher"]
+
+
+def test_default_index_only_for_a_new_spec(home):
+    from tgzr.edge.home_manager import ClientSpec as Spec
+
+    default = SpecOverrides(default_index_urls=("https://default/simple",))
+    new = select_chain(home, "https://new.test", "some_client", default)
+    assert new.spec.index_urls == ("https://default/simple",)
+    # A saved spec keeps its index when only a default is given...
+    org = home.add_org("https://saved.test")
+    org.client("some_client").save_spec(Spec("some_client", index_urls=("https://saved/simple",)))
+    kept = select_chain(home, "https://saved.test", "some_client", default)
+    assert kept.spec.index_urls == ("https://saved/simple",)
+    # ...and an explicit index still overrides it.
+    explicit = SpecOverrides(index_urls=("https://explicit/simple",), default_index_urls=("https://default/simple",))
+    assert select_chain(home, "https://saved.test", "some_client", explicit).spec.index_urls == (
+        "https://explicit/simple",)

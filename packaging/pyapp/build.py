@@ -25,7 +25,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]  # the launcher repository
 DISTRIBUTION = "tgzr.edge.launcher"
-DEFAULT_INDEX = "http://pi.alpha.tgzr.net/tgzr/beta/+simple/"
+DEFAULT_INDEX = "https://pi.alpha.tgzr.net/tgzr/beta"
 DEFAULT_PYAPP = "0.31.0"
 DEFAULT_PYTHON = "3.12"
 

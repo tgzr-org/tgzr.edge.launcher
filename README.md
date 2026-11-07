@@ -24,13 +24,19 @@ uv run tgzr.edge.launcher --home-dir /tmp/th --org http://127.0.0.1:8000 --clien
 - **Settings** (`LauncherSettings`, flag > `TGZR_LAUNCHER_*` > closest `.env`
   > default): `--home-dir` (or `TGZR_HOME`, never from `.env`),
   `--create-home`, `--org`, `--client`, `--client-version`, `--extra`,
-  `--index-url`, `--find-links`, `--editable` (repeatable), `--headless`,
+  `--index-url`, `--find-links`, `--editable` (repeatable), `--default-index-url`,
+  `--headless`,
   `--native` (the default: this page in a native window that stays open, and
   the clients it starts in native windows too; links to browser clients open
   in the system browser) or `--web` (this page in the browser, and web
   clients; giving both is an error),
   `--switch-to N`, `--wait-pid PID`, `--wait-pid-timeout`, `--ready-timeout`
   (60 s), `--port`, `--no-browser`.
+- **Package index of a new client:** `--index-url` (or `TGZR_LAUNCHER_INDEX_URL`,
+  a JSON list), else `--default-index-url` (or `TGZR_LAUNCHER_DEFAULT_INDEX_URL`;
+  default `https://pi.alpha.tgzr.net/tgzr/beta`), else PyPI when that is empty.
+  A client launched before keeps the index saved in its `client.json`, unless
+  `--index-url` is given.
 - **The page**: a launch form (with a *Native window* checkbox) and the known
   clients. A running client is marked *running* and has **Browse** (this tab
   opens it through a new one-time link) and **Stop** (after a confirmation; SIGTERM, then SIGKILL
@@ -67,9 +73,12 @@ python packaging/pyapp/build.py --help               # --index-url, --find-links
 ```
 
 - The executable installs exactly `--version` from `--index-url` (default
-  `http://pi.alpha.tgzr.net/tgzr/beta/+simple/`), so **upload that version to
+  `https://pi.alpha.tgzr.net/tgzr/beta`), so **upload that version to
   the index first**.
-- On Windows it is built as a GUI program (no console window).
+- On Windows it is built as a GUI program (no console window). PyApp then
+  starts `pythonw.exe` without waiting for it, so in a terminal `--help` and
+  other output are not shown and the exit code is lost (`self ...` commands
+  still work).
 - Its install lives in PyApp's per-user data folder; `PYAPP_INSTALL_DIR_TGZR-EDGE-LAUNCHER`
   (set with `env`: the name has dashes) moves it. `<exe> self remove` deletes it, `<exe> self restore` reinstalls.
 - **CI:** pushing a `v*` tag runs `.github/workflows/executables.yml`, which

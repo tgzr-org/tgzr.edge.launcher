@@ -40,3 +40,21 @@ def test_negative_sounding_flags(home):
     assert not load_settings([]).no_browser
     assert load_settings([]).use_native and load_settings(["--native"]).use_native  # native by default
     assert not load_settings(["--web"]).use_native
+
+
+def test_default_index(home, monkeypatch):
+    from tgzr.edge.launcher.settings import DEFAULT_INDEX_URL
+
+    s = load_settings([])
+    assert s.default_index_url == DEFAULT_INDEX_URL == "https://pi.alpha.tgzr.net/tgzr/beta"
+    assert s.index_url == [] and s.effective_index_urls == [DEFAULT_INDEX_URL]
+    monkeypatch.setenv("TGZR_LAUNCHER_DEFAULT_INDEX_URL", "https://other/simple")
+    assert load_settings([]).effective_index_urls == ["https://other/simple"]
+    monkeypatch.setenv("TGZR_LAUNCHER_DEFAULT_INDEX_URL", "")  # empty: PyPI
+    assert load_settings([]).effective_index_urls == []
+    # An explicit index wins over the default, from the flag or TGZR_LAUNCHER_INDEX_URL.
+    monkeypatch.setenv("TGZR_LAUNCHER_DEFAULT_INDEX_URL", "https://other/simple")
+    assert load_settings(["--index-url", "https://flag/simple"]).effective_index_urls == ["https://flag/simple"]
+    monkeypatch.setenv("TGZR_LAUNCHER_INDEX_URL", '["https://env/simple"]')
+    s = load_settings([])
+    assert s.index_url == ["https://env/simple"] and s.effective_index_urls == ["https://env/simple"]

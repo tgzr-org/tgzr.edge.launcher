@@ -74,6 +74,8 @@ class SpecOverrides:
     index_urls: tuple[str, ...] = ()
     find_links: tuple[str, ...] = ()
     editable: tuple[str, ...] = ()
+    # Only for a new spec, when ``index_urls`` is empty: never changes a saved spec.
+    default_index_urls: tuple[str, ...] = ()
 
     @property
     def any(self) -> bool:
@@ -141,7 +143,8 @@ def select_chain(home: Home, org_url: str, client: str | None, overrides: SpecOv
         if client is None:
             raise LaunchError("give --client to launch a new client")
         spec = ClientSpec(package=client, version=overrides.version or "", extras=overrides.extras,
-                          index_urls=overrides.index_urls, find_links=find_links, editable=editable)
+                          index_urls=overrides.index_urls or overrides.default_index_urls,
+                          find_links=find_links, editable=editable)
         chain.save_spec(spec)
     elif overrides.any:
         chain.save_spec(spec.merged(version=overrides.version, extras=overrides.extras or None,

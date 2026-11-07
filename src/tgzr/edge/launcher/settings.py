@@ -17,6 +17,9 @@ from pydantic_settings import BaseSettings, CliToggleFlag, SettingsConfigDict
 
 from tgzr.edge.home_manager import ENV_HOME, closest_env_file, home_dir_from, is_home
 
+# Where new clients install from when no --index-url is given (empty: PyPI).
+DEFAULT_INDEX_URL = "https://pi.alpha.tgzr.net/tgzr/beta"
+
 
 class LauncherSettings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -34,7 +37,10 @@ class LauncherSettings(BaseSettings):
     client: str | None = Field(None, description="the client distribution, e.g. tgzr.edge.nice_client")
     client_version: str | None = Field(None, description="a version specifier for the client, e.g. '>=0.1,<1'")
     extra: list[str] = Field([], description="more requirements for the client venv (repeatable)")
-    index_url: list[str] = Field([], description="package index for the client (repeatable; default PyPI)")
+    index_url: list[str] = Field([], description="package index for the client (repeatable; default: --default-index-url)")
+    default_index_url: str = Field(
+        DEFAULT_INDEX_URL,
+        description=f"the index for a new client when no --index-url is given (default {DEFAULT_INDEX_URL}; empty: PyPI)")
     find_links: list[str] = Field([], description="a folder of local wheels (repeatable)")
     editable: list[str] = Field([], description="install from this local project folder, editable (repeatable)")
     headless: CliToggleFlag[bool] = Field(False, description="no UI: launch from the flags, or fail")
@@ -74,6 +80,14 @@ class LauncherSettings(BaseSettings):
     def use_native(self) -> bool:
         """Native windows unless ``--web`` (or ``TGZR_LAUNCHER_WEB``)."""
         return not self.web
+
+    @property
+    def effective_index_urls(self) -> list[str]:
+        """``--index-url`` (or ``TGZR_LAUNCHER_INDEX_URL``) if given, else the
+        default index, else nothing (uv's default: PyPI)."""
+        if self.index_url:
+            return list(self.index_url)
+        return [self.default_index_url] if self.default_index_url.strip() else []
 
     @property
     def home_path(self) -> Path:
