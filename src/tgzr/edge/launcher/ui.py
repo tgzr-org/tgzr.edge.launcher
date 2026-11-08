@@ -392,7 +392,10 @@ def run_ui(argv: Sequence[str] | None, settings: LauncherSettings) -> int:
                 return 1
             time.sleep(0.05)
         webview.create_window(TITLE, url, width=900, height=820)
-        webview.start()  # until the user closes the window
+        # The window/taskbar icon: the page favicon (NiceGUI's). Honoured on Qt, GTK and WinForms.
+        import nicegui
+        icon = Path(nicegui.__file__).parent / "static" / "favicon.ico"
+        webview.start(icon=str(icon))  # until the user closes the window
         server.should_exit = True
         thread.join(timeout=5)
         return 0
