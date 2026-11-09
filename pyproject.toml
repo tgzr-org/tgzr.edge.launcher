@@ -31,6 +31,10 @@ dev = [
 requires = ["hatchling>=1.27", "hatch-vcs>=0.4"]
 build-backend = "hatchling.build"
 
+[tool.uv]
+# Rebuild this package's metadata (its hatch-vcs version) after a commit or a tag.
+cache-keys = [{ file = "pyproject.toml" }, { git = { commit = true, tags = true } }]
+
 [tool.hatch.version]
 source = "vcs"
 # Until the repository has its first tag.
