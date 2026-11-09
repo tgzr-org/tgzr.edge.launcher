@@ -203,7 +203,8 @@ def _choose(chain: ClientChain, switch_to: int | None, progress: Progress) -> Ve
     assert spec is not None
     progress(f"building venv {chain.next_number()} for {spec.package} (this takes a while the first time)")
     try:
-        venv = chain.build([spec.install_step()])
+        # uv's output lines ("Resolved ...", " + pkg==1.0") as they come, from uv's reader threads.
+        venv = chain.build([spec.install_step()], on_event=lambda event: progress(event.line))
     except BuildError as e:
         raise LaunchError(f"could not build the client venv: {e}") from e
     return chain.switch(venv.number)

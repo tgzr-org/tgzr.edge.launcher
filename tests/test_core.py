@@ -45,7 +45,7 @@ def test_no_link_by_default(home, chain, clients):
 def test_first_launch_builds_venv_1(home, chain, clients, monkeypatch):
     built = []
 
-    def fake_build(self, steps):
+    def fake_build(self, steps, *, on_event=None):
         built.append(steps)
         fake_venv(self, 1)
         return Venv(1, self.path / "1")

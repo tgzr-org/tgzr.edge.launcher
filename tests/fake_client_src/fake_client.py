@@ -1,4 +1,4 @@
-"""A stdlib-only stand-in for a client, run as ``<venv>/bin/python -m fake_client``.
+"""A stdlib-only stand-in for a client, run as ``<venv>/.venv/bin/python -m fake_client``.
 
 What it does is read from ``<venv>/behavior``: ``ready`` (report ready, then
 wait to be killed), ``crash`` (exit 2), ``hang`` (never ready), ``exit0``
@@ -13,7 +13,7 @@ import sys
 import time
 from pathlib import Path
 
-venv = Path(sys.executable).parent.parent
+venv = Path(sys.executable).parent.parent.parent  # <venv>/.venv/bin/python
 chain = venv.parent
 behavior = (venv / "behavior").read_text().strip()
 lock = open(chain / "instance.lock", "a")

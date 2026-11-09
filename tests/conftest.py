@@ -18,8 +18,8 @@ ORG = "https://org.test"
 
 def fake_venv(chain: ClientChain, n: int | str, behavior: str = "ready") -> Path:
     path = chain.path / str(n)
-    (path / "bin").mkdir(parents=True)
-    (path / "bin" / "python").symlink_to(os.path.realpath(sys.executable))
+    (path / ".venv" / "bin").mkdir(parents=True)
+    (path / ".venv" / "bin" / "python").symlink_to(os.path.realpath(sys.executable))
     (path / "behavior").write_text(behavior)
     return path
 
