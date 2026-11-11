@@ -9,7 +9,9 @@ dependencies = [
     "nicegui>=3.19,<4",
     "pywebview[qt]>=5",  # --native: the launcher's page in a desktop window
     "pydantic-settings>=2.16",
+    "watchfiles>=0.21",  # --reload
     "tgzr.edge.home_manager>=0.102",  # build(on_event=...), uv-project venvs
+    "tgzr.libs.nice>=0.103",  # TGZRBranding (not in v0.102: release libs.nice first)
     "tgzr.libs.package_management>=0.102",
 ]
 

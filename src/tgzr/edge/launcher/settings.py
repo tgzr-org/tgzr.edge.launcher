@@ -48,6 +48,9 @@ class LauncherSettings(BaseSettings):
         False, description="native windows for this launcher and the clients it starts (the default)")
     web: CliToggleFlag[bool] = Field(
         False, description="the browser instead: this launcher's page, and the clients it starts")
+    reload: CliToggleFlag[bool] = Field(
+        False, description="development: restart this launcher's page and the clients it starts when a Python file "
+                           "of a tgzr package changes (implies --web)")
     switch_to: int | None = Field(None, description="make venv N current before starting (used by client restarts)")
     wait_pid: int | None = Field(None, description="first wait until this process has exited")
     wait_pid_timeout: float = Field(60.0, description="seconds to wait for --wait-pid")
@@ -74,12 +77,14 @@ class LauncherSettings(BaseSettings):
     def _one_mode(self) -> LauncherSettings:
         if self.native and self.web:
             raise ValueError("give --native or --web, not both")
+        if self.native and self.reload:
+            raise ValueError("--reload implies --web: do not give --native with it")
         return self
 
     @property
     def use_native(self) -> bool:
-        """Native windows unless ``--web`` (or ``TGZR_LAUNCHER_WEB``)."""
-        return not self.web
+        """Native windows unless ``--web`` or ``--reload`` (or ``TGZR_LAUNCHER_WEB``, ``TGZR_LAUNCHER_RELOAD``)."""
+        return not (self.web or self.reload)
 
     @property
     def effective_index_urls(self) -> list[str]:

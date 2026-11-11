@@ -1,8 +1,9 @@
 """The launcher's page (127.0.0.1 only, behind the local access guard).
 
 * No home yet: ask where to create it (prefilled with the resolved home dir).
-* Otherwise: a form (org URL and client spec) and the known (org, client)
-  chains, each with Launch. The client is started with
+* Otherwise: the known (org, client) chains as cards, each with Launch, and
+  a **+** button opening the "Add a connection" dialog (org URL and client
+  spec; Connect closes it and launches). The client is started with
   ``TGZR_CLIENT_NO_BROWSER=1`` and hands its one-time link back in its ready
   signal; this tab then navigates to the client (no new tab), and the
   launcher exits.
@@ -20,6 +21,11 @@ which are detached and independent of it). Links to clients (a browser
 client, or Browse) open in the system browser. Several launchers may run at
 once: each launch of a chain is serialized by its ``launch.lock``. With
 ``--web`` the page opens in the browser and closes after a launch.
+
+``--reload`` (development) implies ``--web``: the page is served by a child
+process restarted when a Python file of a ``tgzr`` package changes (see
+:mod:`tgzr.edge.launcher.reloader`), and the clients it starts get
+``--reload`` too (Native window is unticked and disabled).
 """
 
 from __future__ import annotations
@@ -38,6 +44,8 @@ from typing import Any
 from fastapi import FastAPI
 from nicegui import run, ui
 
+from tgzr.libs.nice.branding.tgzr_branding import TGZRBranding
+
 from tgzr.edge.home_manager import ClientChain, Home, HomeError, NoLink, NoSuchProcess, is_home
 
 from tgzr.edge.launcher.core import (
@@ -47,8 +55,10 @@ from tgzr.edge.launcher.core import (
     SpecOverrides,
     client_env,
     launch,
+    launcher_command,
     select_chain,
 )
+from tgzr.edge.launcher.reloader import reload_child, supervise
 from tgzr.edge.launcher.guard import LaunchTokens, LocalAccessGuard
 from tgzr.edge.launcher.settings import LauncherSettings, load_settings
 
@@ -86,13 +96,15 @@ def state() -> LauncherState:
     return _STATE
 
 
-def create_app(st: LauncherState, *, launch_tokens: LaunchTokens, allowed_hosts: set[str], cookie_name: str) -> FastAPI:
+def create_app(st: LauncherState, *, launch_tokens: LaunchTokens, allowed_hosts: set[str], cookie_name: str,
+               cookie_secret: str | None = None) -> FastAPI:
     global _STATE
     _STATE = st
     app = FastAPI(openapi_url=None, docs_url=None, redoc_url=None)
     ui.run_with(app, root=root, title=TITLE, show_welcome_message=False, reconnect_timeout=30)
     app.add_middleware(LocalAccessGuard, launch_tokens=launch_tokens, allowed_hosts=allowed_hosts,
-                       cookie_name=cookie_name, app_name=TITLE, relaunch_hint="run tgzr.edge.launcher again")
+                       cookie_name=cookie_name, app_name=TITLE, relaunch_hint="run tgzr.edge.launcher again",
+                       secret=cookie_secret)
     return app
 
 
@@ -101,9 +113,12 @@ def _lines(text: str) -> tuple[str, ...]:
 
 
 async def root() -> None:
-    with ui.header().classes("items-center px-4 py-2"):
-        ui.label(TITLE).classes("text-lg font-medium")
-    body = ui.column().classes("w-full p-4 gap-4 items-stretch max-w-4xl mx-auto")
+    branding = TGZRBranding.get()  # once per process
+    branding.apply()
+    with ui.row(wrap=False).classes("w-full h-full p-0"):
+        branding.side_logo().classes("max-w-[20em]")
+        ui.separator().props("vertical").classes("h-full")
+        body = ui.column().classes("grow p-4 gap-4")
 
     def draw() -> None:
         body.clear()
@@ -212,7 +227,8 @@ def launch_page() -> None:
             settings = load_settings(st.argv, focus=chain.path) if st.argv is not None else s
             result = await run.io_bound(st.launch_fn, home, chain, switch_to=None,
                                         ready_timeout=settings.ready_timeout, progress=progress,
-                                        client_env=client_env(native=native.value, hand_over_link=True))
+                                        client_env=client_env(native=native.value and not settings.reload,
+                                                              hand_over_link=True, reload=settings.reload))
         except ClientAlreadyRunning as e:
             push()
             await open_running(chain, str(e))
@@ -249,39 +265,49 @@ def launch_page() -> None:
         else:
             st.on_done()
 
-    with ui.card().classes("w-full gap-2"):
-        ui.label("Launch a client").classes("text-xl")
-        native = ui.checkbox("Native window (otherwise the browser)", value=s.use_native).mark("native")
-        org = ui.input("Org URL", value=s.org or "", placeholder="https://org.example.com").classes("w-full").mark(
-            "org-url")
-        client = ui.input("Client", value=s.client or DEFAULT_CLIENT).classes("w-full").mark("client")
-        version = ui.input("Client version", value=s.client_version or "", placeholder=">=0.1,<1").classes(
-            "w-full").mark("client-version")
-        with ui.expansion("Advanced").classes("w-full"):
-            extras = ui.textarea("More requirements (one per line)", value="\n".join(s.extra)).classes(
-                "w-full").mark("extras")
-            default_index = s.default_index_url.strip() or "PyPI"
-            indexes = ui.textarea(f"Package indexes (one per line; empty: {default_index})",
-                                  value="\n".join(s.index_url)).classes(
-                "w-full").mark("indexes")
-            find_links = ui.textarea("Local wheel folders (one per line)", value="\n".join(s.find_links)).classes(
-                "w-full").mark("find-links")
-            editable = ui.textarea("Editable project folders (development; one per line)",
-                                   value="\n".join(s.editable)).classes("w-full").mark("editable")
-        form_error = ui.label("").classes("text-negative").mark("form-error")
+    native = ui.checkbox("Native window (otherwise the browser)", value=s.use_native).mark("native")
+    if s.reload:
+        native.disable()
+        native.tooltip("--reload: the clients run in the browser")
 
-        async def from_form() -> None:
-            if not org.value.strip() or not client.value.strip():
-                form_error.set_text("The org URL and the client are required.")
-                return
-            form_error.set_text("")
-            await do_launch(org.value.strip(), client.value.strip(), SpecOverrides(
-                package=client.value.strip(), version=version.value.strip() or None, extras=_lines(extras.value),
-                index_urls=_lines(indexes.value), find_links=_lines(find_links.value),
-                editable=_lines(editable.value),
-                default_index_urls=tuple(s.effective_index_urls) if not _lines(indexes.value) else ()))
+    async def add_connection() -> None:
+        # In ``status``, not in the known-clients list: its refresh would delete the open dialog.
+        with status, ui.dialog() as dialog, ui.card().classes("w-[36em] max-w-full gap-2"):
+            ui.label("Add a connection").classes("text-xl")
+            org = ui.input("Org URL", value=s.org or "", placeholder="https://org.example.com").classes(
+                "w-full").mark("org-url")
+            client = ui.input("Client", value=s.client or DEFAULT_CLIENT).classes("w-full").mark("client")
+            version = ui.input("Client version", value=s.client_version or "", placeholder=">=0.1,<1").classes(
+                "w-full").mark("client-version")
+            with ui.expansion("Advanced").classes("w-full"):
+                extras = ui.textarea("More requirements (one per line)", value="\n".join(s.extra)).classes(
+                    "w-full").mark("extras")
+                default_index = s.default_index_url.strip() or "PyPI"
+                indexes = ui.textarea(f"Package indexes (one per line; empty: {default_index})",
+                                      value="\n".join(s.index_url)).classes("w-full").mark("indexes")
+                find_links = ui.textarea("Local wheel folders (one per line)", value="\n".join(s.find_links)).classes(
+                    "w-full").mark("find-links")
+                editable = ui.textarea("Editable project folders (development; one per line)",
+                                       value="\n".join(s.editable)).classes("w-full").mark("editable")
+            form_error = ui.label("").classes("text-negative").mark("form-error")
 
-        ui.button("Launch", on_click=from_form).props("color=primary").mark("launch")
+            def submit() -> None:
+                if not org.value.strip() or not client.value.strip():
+                    form_error.set_text("The org URL and the client are required.")
+                    return
+                dialog.submit((org.value.strip(), client.value.strip(), SpecOverrides(
+                    package=client.value.strip(), version=version.value.strip() or None, extras=_lines(extras.value),
+                    index_urls=_lines(indexes.value), find_links=_lines(find_links.value),
+                    editable=_lines(editable.value),
+                    default_index_urls=tuple(s.effective_index_urls) if not _lines(indexes.value) else ())))
+
+            with ui.row().classes("w-full justify-end gap-2"):
+                ui.button("Cancel", on_click=lambda: dialog.submit(None)).props("flat").mark("add-cancel")
+                ui.button("Connect", on_click=submit).props("color=primary").mark("launch")
+        chosen = await dialog
+        dialog.delete()
+        if chosen is not None:  # closed first: the launch's progress and result show on the page
+            await do_launch(*chosen)
 
     shown: dict[str, list[tuple[str, bool]]] = {"snapshot": []}
 
@@ -297,14 +323,11 @@ def launch_page() -> None:
         snap = snapshot(chains)
         shown["snapshot"] = snap
         states = [running for _, running in snap]
-        if not chains:
-            return
-        with ui.card().classes("w-full gap-2"):
-            ui.label("Known clients").classes("text-xl")
+        with ui.row().classes("gap-2 items-stretch"):
             for c, running in zip(chains, states, strict=True):
                 cur = c.current_number()
                 key = f"{c.org.slug}-{c.slug}"
-                with ui.row().classes("w-full items-center justify-between").mark(f"chain-{key}"):
+                with ui.card().mark(f"chain-{key}"):
                     with ui.column().classes("gap-0"):
                         with ui.row().classes("items-center gap-2"):
                             ui.label(f"{c.org.name}").classes("font-medium")
@@ -325,6 +348,8 @@ def launch_page() -> None:
                                 "flat color=negative").mark(f"stop-{key}")
                     else:
                         ui.button("Launch", on_click=make()).props("flat").mark(f"launch-{key}")
+            ui.button(icon="sym_s_add_circle", on_click=add_connection).tooltip(
+                "Add a connection").mark("add-connection")
 
     def refresh_if_changed() -> None:
         if snapshot(known()) != shown["snapshot"]:
@@ -341,6 +366,10 @@ def run_ui(argv: Sequence[str] | None, settings: LauncherSettings) -> int:
     (closes the native window, or Ctrl-C)."""
     import uvicorn
 
+    args = list(argv) if argv is not None else sys.argv[1:]
+    if settings.reload and reload_child() is None:
+        return supervise([*launcher_command(), *args], port=settings.port)
+    child = reload_child()  # under a --reload supervisor: the port and cookie secret to keep
     webview: Any = None
     if settings.use_native:
         try:
@@ -351,7 +380,8 @@ def run_ui(argv: Sequence[str] | None, settings: LauncherSettings) -> int:
             return 1
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.bind(("127.0.0.1", settings.port))
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # --reload: the next child binds the same port
+    sock.bind(("127.0.0.1", child.port if child else settings.port))
     port = sock.getsockname()[1]
     tokens = LaunchTokens()
     server: uvicorn.Server | None = None
@@ -364,12 +394,12 @@ def run_ui(argv: Sequence[str] | None, settings: LauncherSettings) -> int:
 
         threading.Thread(target=later, daemon=True).start()
 
-    st = LauncherState(settings=settings, argv=list(argv) if argv is not None else sys.argv[1:], on_done=done)
+    st = LauncherState(settings=settings, argv=args, on_done=done)
     if settings.use_native:
         st.stay_open = True
         st.navigate = webbrowser.open  # the window stays a launcher: clients open in the system browser
     app = create_app(st, launch_tokens=tokens, allowed_hosts={f"127.0.0.1:{port}"},
-                     cookie_name=f"tgzr.edge.launcher_{port}")
+                     cookie_name=f"tgzr.edge.launcher_{port}", cookie_secret=child.cookie_secret if child else None)
     server = uvicorn.Server(uvicorn.Config(app, log_level="warning"))
     url = f"http://127.0.0.1:{port}/?launch={tokens.issue()}"
 
@@ -378,6 +408,8 @@ def run_ui(argv: Sequence[str] | None, settings: LauncherSettings) -> int:
             if server.should_exit:
                 return
             time.sleep(0.05)
+        if child is not None and not child.first:
+            return  # restarted: the open page reconnects
         if settings.no_browser:
             print(f"{TITLE}: open this one-time link (valid 5 minutes):\n{url}", flush=True)
         else:

@@ -91,12 +91,16 @@ class LaunchResult:
     url: str | None = None  # the client's one-time link, when it did not open a browser itself
 
 
-def client_env(*, native: bool = True, hand_over_link: bool = False) -> dict[str, str]:
+def client_env(*, native: bool = True, hand_over_link: bool = False, reload: bool = False) -> dict[str, str]:
     """Environment variables for the client: its window mode (both
-    variables, so they also override a ``.env`` saying the opposite), and,
-    for a web client, its one-time link in the ready signal instead of a new
-    browser tab (``hand_over_link``)."""
-    env = {"TGZR_CLIENT_NATIVE": "1" if native else "0", "TGZR_CLIENT_WEB": "0" if native else "1"}
+    variables, so they also override a ``.env`` saying the opposite), its
+    ``--reload`` (which implies the browser), and, for a web client, its
+    one-time link in the ready signal instead of a new browser tab
+    (``hand_over_link``)."""
+    if native and reload:
+        raise ValueError("--reload implies --web: a reloading client has no native window")
+    env = {"TGZR_CLIENT_NATIVE": "1" if native else "0", "TGZR_CLIENT_WEB": "0" if native else "1",
+           "TGZR_CLIENT_RELOAD": "1" if reload else "0"}
     if hand_over_link and not native:
         env["TGZR_CLIENT_NO_BROWSER"] = "1"
     return env

@@ -5,6 +5,9 @@ and the closest ``.env``; anything missing is an error. Otherwise a local
 page asks for what is missing (where to create the home; the org and the
 client) and lists the known (org, client) chains, each with Launch.
 
+``--reload`` (development, implies ``--web``) is passed on to the client;
+with the UI, the launcher's own page reloads too.
+
 Exit codes: 0 launched, 1 failed, 3 the client is already running.
 """
 
@@ -61,7 +64,7 @@ def run_headless(argv: Sequence[str] | None, settings: LauncherSettings) -> int:
     # Settings again, from the chain folder's closest .env.
     settings = load_settings(argv, focus=chain.path)
     result = launch(home, chain, switch_to=settings.switch_to, ready_timeout=settings.ready_timeout, progress=_say,
-                    client_env=client_env(native=settings.use_native))
+                    client_env=client_env(native=settings.use_native, reload=settings.reload))
     if result.fell_back:
         _say(f"the chosen venv failed; running venv {result.venv.number} instead")
     return 0

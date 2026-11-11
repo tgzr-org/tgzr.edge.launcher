@@ -65,14 +65,17 @@ class LocalAccessGuard:
         cookie_name: str,
         app_name: str = "TGZR Home",
         relaunch_hint: str = "restart TGZR Home",
+        secret: str | None = None,
     ) -> None:
+        """``secret``: the cookie's value (default: a new random one); a
+        ``--reload`` supervisor gives the same one to every restart."""
         self.app = app
         self.app_name = app_name
         self.relaunch_hint = relaunch_hint
         self.launch_tokens = launch_tokens
         self.allowed_hosts = allowed_hosts
         self.cookie_name = cookie_name
-        self.secret = secrets.token_urlsafe(32)
+        self.secret = secret or secrets.token_urlsafe(32)
 
     async def __call__(self, scope: dict, receive: Any, send: Any) -> None:
         if scope["type"] not in ("http", "websocket"):

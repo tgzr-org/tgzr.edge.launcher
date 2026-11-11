@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from tgzr.edge.launcher.settings import load_settings
 
 
@@ -40,6 +42,16 @@ def test_negative_sounding_flags(home):
     assert not load_settings([]).no_browser
     assert load_settings([]).use_native and load_settings(["--native"]).use_native  # native by default
     assert not load_settings(["--web"]).use_native
+
+
+def test_reload_implies_web(home):
+    from pydantic import ValidationError
+
+    s = load_settings(["--reload"])
+    assert s.reload and not s.use_native and not load_settings([]).reload
+    with pytest.raises(ValidationError, match="implies --web"):
+        load_settings(["--reload", "--native"])
+
 
 
 def test_default_index(home, monkeypatch):

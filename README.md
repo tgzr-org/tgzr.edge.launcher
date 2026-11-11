@@ -31,7 +31,9 @@ uv run tgzr.edge.launcher --home-dir /tmp/th --org http://127.0.0.1:8000 --clien
   in the system browser) or `--web` (this page in the browser, and web
   clients; giving both is an error),
   `--switch-to N`, `--wait-pid PID`, `--wait-pid-timeout`, `--ready-timeout`
-  (60 s), `--port`, `--no-browser`.
+  (60 s), `--port`, `--no-browser`, `--reload` (development, implies `--web`:
+  this page restarts when a `.py` file of an editable install or of the `tgzr`
+  namespace changes, and the clients it starts get `--reload` too).
 - **Package index of a new client:** `--index-url` (or `TGZR_LAUNCHER_INDEX_URL`,
   a JSON list), else `--default-index-url` (or `TGZR_LAUNCHER_DEFAULT_INDEX_URL`;
   default `https://pi.alpha.tgzr.net/tgzr/beta`), else PyPI when that is empty.

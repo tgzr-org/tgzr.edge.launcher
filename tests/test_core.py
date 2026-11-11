@@ -215,10 +215,16 @@ def test_native_and_web_together_is_an_error(home):
 def test_client_env():
     from tgzr.edge.launcher.core import client_env
 
-    assert client_env() == {"TGZR_CLIENT_NATIVE": "1", "TGZR_CLIENT_WEB": "0"}
-    assert client_env(native=True, hand_over_link=True) == {"TGZR_CLIENT_NATIVE": "1", "TGZR_CLIENT_WEB": "0"}
+    native = {"TGZR_CLIENT_NATIVE": "1", "TGZR_CLIENT_WEB": "0", "TGZR_CLIENT_RELOAD": "0"}
+    assert client_env() == native
+    assert client_env(native=True, hand_over_link=True) == native
     assert client_env(native=False, hand_over_link=True) == {"TGZR_CLIENT_NATIVE": "0", "TGZR_CLIENT_WEB": "1",
-                                                              "TGZR_CLIENT_NO_BROWSER": "1"}
+                                                              "TGZR_CLIENT_RELOAD": "0", "TGZR_CLIENT_NO_BROWSER": "1"}
+    # --reload is passed on (always set: it also overrides a .env saying the opposite); it implies the browser.
+    assert client_env(native=False, reload=True) == {"TGZR_CLIENT_NATIVE": "0", "TGZR_CLIENT_WEB": "1",
+                                                      "TGZR_CLIENT_RELOAD": "1"}
+    with pytest.raises(ValueError, match="implies --web"):
+        client_env(native=True, reload=True)
 
 
 def test_concurrent_launches_of_one_chain(home, chain, clients):

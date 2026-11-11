@@ -38,11 +38,22 @@ class FakeLaunch:
                             url="http://127.0.0.1:5555/?launch=tok")
 
 
+async def open_form(user: User) -> None:
+    """Open the "Add a connection" dialog."""
+    user.find(marker="add-connection").click()
+    await user.should_see(marker="org-url")
+
+
+def chain_marker(home: Home) -> str:
+    chain = home.org(ORG).client("tgzr.edge.nice_client")
+    return f"chain-{chain.org.slug}-{chain.slug}"
+
+
 @asynccontextmanager
-async def launcher_env(tmp_path, home_dir, launch_fn, *, web: bool = True):
+async def launcher_env(tmp_path, home_dir, launch_fn, *, web: bool = True, reload: bool = False):
     os.environ["NICEGUI_USER_SIMULATION"] = "true"
     done: list[int] = []
-    st = LauncherState(settings=LauncherSettings(home_dir=home_dir, web=web), argv=None, on_done=lambda: done.append(1),
+    st = LauncherState(settings=LauncherSettings(home_dir=home_dir, web=web, reload=reload), argv=None, on_done=lambda: done.append(1),
                        launch_fn=launch_fn)
     st.navigated = []  # type: ignore[attr-defined]
     st.navigate = st.navigated.append  # type: ignore[attr-defined]
@@ -66,7 +77,7 @@ async def test_creates_the_home(tmp_path):
         await user.should_see(marker="create-home-title")
         user.find(marker="home-path").clear().type(str(tmp_path / "chosen"))
         user.find(marker="create-home").click()
-        await user.should_see(marker="launch", retries=20)
+        await user.should_see(marker="add-connection", retries=20)  # a fresh home can add a connection
         assert (tmp_path / "chosen" / "tgzr_home.json").is_file()
         assert st.home_path == tmp_path / "chosen"
 
@@ -76,12 +87,13 @@ async def test_launch_from_the_form(tmp_path):
     fake = FakeLaunch()
     async with launcher_env(tmp_path, home.path, fake) as (user, st, done):
         await user.open("/")
+        await open_form(user)
         user.find(marker="org-url").type(ORG)
         user.find(marker="client-version").type(">=0.1,<1")
         user.find(marker="launch").click()
         await user.should_see(marker="launched", retries=50)
         assert fake.calls == [(ORG, "tgzr.edge.nice_client")] and done == [1]
-        assert fake.client_envs == [{"TGZR_CLIENT_NATIVE": "0", "TGZR_CLIENT_WEB": "1",
+        assert fake.client_envs == [{"TGZR_CLIENT_NATIVE": "0", "TGZR_CLIENT_WEB": "1", "TGZR_CLIENT_RELOAD": "0",
                                      "TGZR_CLIENT_NO_BROWSER": "1"}]  # a web client hands its link back
         assert st.navigated == ["http://127.0.0.1:5555/?launch=tok"]  # this tab goes there
         assert home.org(ORG).client("tgzr.edge.nice_client").spec.version == ">=0.1,<1"
@@ -91,8 +103,12 @@ async def test_form_needs_an_org(tmp_path):
     home = Home.create(tmp_path / "h")
     async with launcher_env(tmp_path, home.path, FakeLaunch()) as (user, st, done):
         await user.open("/")
+        await open_form(user)
         user.find(marker="launch").click()
         await user.should_see("The org URL and the client are required.")
+        await user.should_see(marker="org-url")  # the dialog stays open
+        user.find(marker="add-cancel").click()
+        await user.should_not_see(marker="org-url")
 
 
 async def test_known_chains_launch_and_errors_show_the_log(tmp_path):
@@ -116,6 +132,7 @@ async def test_already_running_opens_the_running_client(tmp_path):
         asked = []
         st.link_fn = lambda chain: asked.append(chain.slug) or "http://127.0.0.1:6666/?launch=again"
         await user.open("/")
+        await open_form(user)
         user.find(marker="org-url").type(ORG)
         user.find(marker="launch").click()
         await user.should_see("is running for https://org.test: opening it", retries=50)
@@ -134,6 +151,7 @@ async def test_already_running_without_a_link_says_why(tmp_path):
 
         st.link_fn = no_link
         await user.open("/")
+        await open_form(user)
         user.find(marker="org-url").type(ORG)
         user.find(marker="launch").click()
         await user.should_see(marker="launch-error", retries=50)
@@ -146,11 +164,27 @@ async def test_native_checkbox(tmp_path):
     fake = FakeLaunch()
     async with launcher_env(tmp_path, home.path, fake) as (user, st, done):
         await user.open("/")
+        await open_form(user)
         user.find(marker="org-url").type(ORG)
         user.find(marker="native").click()
         user.find(marker="launch").click()
         await user.should_see(marker="launched", retries=50)
-        assert fake.client_envs == [{"TGZR_CLIENT_NATIVE": "1", "TGZR_CLIENT_WEB": "0"}]
+        assert fake.client_envs == [{"TGZR_CLIENT_NATIVE": "1", "TGZR_CLIENT_WEB": "0", "TGZR_CLIENT_RELOAD": "0"}]
+
+
+async def test_reload_is_passed_on_to_the_client(tmp_path):
+    home = Home.create(tmp_path / "h")
+    fake = FakeLaunch()
+    async with launcher_env(tmp_path, home.path, fake, web=False, reload=True) as (user, st, done):
+        await user.open("/")
+        native = user.find(marker="native").elements.pop()
+        assert native.value is False and not native.enabled  # --reload implies the browser
+        await open_form(user)
+        user.find(marker="org-url").type(ORG)
+        user.find(marker="launch").click()
+        await user.should_see(marker="launched", retries=50)
+        assert fake.client_envs == [{"TGZR_CLIENT_NATIVE": "0", "TGZR_CLIENT_WEB": "1", "TGZR_CLIENT_RELOAD": "1",
+                                     "TGZR_CLIENT_NO_BROWSER": "1"}]
 
 
 async def test_native_launcher_ticks_native_by_default(tmp_path):
@@ -209,19 +243,32 @@ async def test_stay_open_keeps_the_page_and_lists_the_new_client(tmp_path):
     async with launcher_env(tmp_path, home.path, fake) as (user, st, done):
         st.stay_open = True
         await user.open("/")
-        await user.should_not_see("Known clients")
+        await open_form(user)
         user.find(marker="org-url").type(ORG)
         user.find(marker="launch").click()
         await user.should_see("opened in your browser", retries=50)
         assert st.navigated == ["http://127.0.0.1:5555/?launch=tok"] and done == []  # not closing
-        await user.should_see("Known clients", retries=50)  # the new chain is listed
+        await user.should_not_see(marker="org-url")  # Connect closed the dialog
+        await user.should_see(marker=chain_marker(home), retries=50)  # the new chain is listed
 
 
 async def test_chains_added_by_another_launcher_appear(tmp_path):
     home = Home.create(tmp_path / "h")
     async with launcher_env(tmp_path, home.path, FakeLaunch()) as (user, st, done):
         await user.open("/")
-        await user.should_not_see("Known clients")
+        await user.should_see(marker="add-connection")
         chain = home.add_org(ORG, name="Acme").client("tgzr.edge.nice_client")
         chain.save_spec(ClientSpec("tgzr.edge.nice_client"))
         await user.should_see(marker=f"launch-{chain.org.slug}-{chain.slug}", retries=50)
+
+
+async def test_a_refresh_keeps_the_open_dialog(tmp_path):
+    home = Home.create(tmp_path / "h")
+    async with launcher_env(tmp_path, home.path, FakeLaunch()) as (user, st, done):
+        await user.open("/")
+        await open_form(user)
+        user.find(marker="org-url").type(ORG)
+        chain = home.add_org("https://other.test", name="Other").client("tgzr.edge.nice_client")
+        chain.save_spec(ClientSpec("tgzr.edge.nice_client"))  # the known clients refresh
+        await user.should_see(marker=f"chain-{chain.org.slug}-{chain.slug}", retries=50)
+        assert user.find(marker="org-url").elements.pop().value == ORG  # still open, still filled
