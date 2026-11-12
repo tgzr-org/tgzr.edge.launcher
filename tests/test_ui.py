@@ -17,6 +17,7 @@ from tgzr.edge.launcher.core import ClientAlreadyRunning, LaunchError, LaunchRes
 from tgzr.edge.launcher.guard import LaunchTokens
 from tgzr.edge.launcher.settings import LauncherSettings
 from tgzr.edge.launcher.ui import LauncherState, create_app
+from tgzr.libs.nice.tools.themes import ThemeManager
 
 COOKIE = "tgzr.edge.launcher_test"
 ORG = "https://org.test"
@@ -53,8 +54,10 @@ def chain_marker(home: Home) -> str:
 async def launcher_env(tmp_path, home_dir, launch_fn, *, web: bool = True, reload: bool = False):
     os.environ["NICEGUI_USER_SIMULATION"] = "true"
     done: list[int] = []
-    st = LauncherState(settings=LauncherSettings(home_dir=home_dir, web=web, reload=reload), argv=None, on_done=lambda: done.append(1),
-                       launch_fn=launch_fn)
+    theme_manager = ThemeManager()
+    theme_manager.select("TGZR")  # as run_ui does
+    st = LauncherState(settings=LauncherSettings(home_dir=home_dir, web=web, reload=reload), theme_manager=theme_manager,
+                       argv=None, on_done=lambda: done.append(1), launch_fn=launch_fn)
     st.navigated = []  # type: ignore[attr-defined]
     st.navigate = st.navigated.append  # type: ignore[attr-defined]
     try:

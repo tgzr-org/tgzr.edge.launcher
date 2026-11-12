@@ -45,6 +45,8 @@ from fastapi import FastAPI
 from nicegui import run, ui
 
 from tgzr.libs.nice.branding.tgzr_branding import TGZRBranding
+from tgzr.libs.nice.tools.themes import ThemeManager
+
 
 from tgzr.edge.home_manager import ClientChain, Home, HomeError, NoLink, NoSuchProcess, is_home
 
@@ -72,6 +74,7 @@ DEFAULT_CLIENT = "tgzr.edge.nice_client"
 @dataclass
 class LauncherState:
     settings: LauncherSettings
+    theme_manager : ThemeManager
     argv: Sequence[str] | None = None
     on_done: Callable[[], None] = lambda: None
     launch_fn: Callable[..., LaunchResult] = launch
@@ -115,6 +118,9 @@ def _lines(text: str) -> tuple[str, ...]:
 async def root() -> None:
     branding = TGZRBranding.get()  # once per process
     branding.apply()
+
+    _STATE.theme_manager.apply()
+
     with ui.row(wrap=False).classes("w-full h-full p-0"):
         branding.side_logo().classes("max-w-[20em]")
         ui.separator().props("vertical").classes("h-full")
@@ -394,7 +400,14 @@ def run_ui(argv: Sequence[str] | None, settings: LauncherSettings) -> int:
 
         threading.Thread(target=later, daemon=True).start()
 
-    st = LauncherState(settings=settings, argv=args, on_done=done)
+    theme_manager = ThemeManager()
+    theme_manager.select('TGZR')
+    st = LauncherState(
+        settings=settings,
+        argv=args,
+        on_done=done,
+        theme_manager=theme_manager,
+    )
     if settings.use_native:
         st.stay_open = True
         st.navigate = webbrowser.open  # the window stays a launcher: clients open in the system browser

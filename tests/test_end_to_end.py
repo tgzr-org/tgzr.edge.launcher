@@ -18,7 +18,7 @@ pytestmark = pytest.mark.slow
 
 PACKAGES = Path(__file__).resolve().parents[2]
 EDITABLE = [PACKAGES / n for n in ("tgzr.edge.nice_client", "tgzr.edge.home_manager", "tgzr.libs.package_management",
-                                   "tgzr.orgs.connect", "tgzr.orgs.client")]
+                                   "tgzr.libs.nice", "tgzr.orgs.connect", "tgzr.orgs.client")]
 ORG = "https://org.invalid"
 
 
