@@ -39,15 +39,39 @@ a URL adds an org.
   ([`tgzr.edge.nice_apps.orgs_connections`](../tgzr.edge.nice_apps.orgs_connections))
   opens another org from inside a client.
 
-Development, from `workspace_dev` (the client and its unpublished siblings,
-editable):
+**Development.** Use a home of its own (`--home-dir ~/tgzr_home_dev`), not
+your daily one.
 
-```bash
-uv run tgzr.edge.launcher --home-dir /tmp/th --org http://127.0.0.1:8000 --client tgzr.edge.nice_client \
-    --editable ../packages/tgzr.edge.nice_client --editable ../packages/tgzr.edge.home_manager \
-    --editable ../packages/tgzr.libs.package_management --editable ../packages/tgzr.orgs.connect \
-    --editable ../packages/tgzr.orgs.client
-```
+- Changing the tgzr packages themselves: from `workspace_dev`, with the
+  client and its unpublished siblings editable (see its README):
+
+  ```bash
+  uv run tgzr.edge.launcher --home-dir ~/tgzr_home_dev --org http://127.0.0.1:8080 --client tgzr.edge.nice_client \
+      --editable ../packages/tgzr.edge.nice_client --editable ../packages/tgzr.edge.home_manager \
+      --editable ../packages/tgzr.libs.package_management --editable ../packages/tgzr.libs.nice \
+      --editable ../packages/tgzr.orgs.connect --editable ../packages/tgzr.orgs.client
+  ```
+
+- Writing your own app plugin: the released client plus your app, editable
+  (see the `tgzr-nice-app` skill):
+
+  ```bash
+  tgzr.edge.launcher --home-dir ~/tgzr_home_dev --org https://org.example.com --client tgzr.edge.nice_client \
+      --extra tgzr.edge.nice_client --editable ../acme-tickets-app --reload
+  ```
+
+`--editable` behaves in ways worth knowing:
+
+- With any `--editable`, the client's own requirement is left out of the
+  venv: the client is expected to be one of the editables. When it is not
+  (the second case above), name it with `--extra`, or the client fails to
+  start ("No module named ...").
+- It is used when a venv is **built**. On a connection that already has a
+  venv it is saved in `client.json` but not applied: run
+  `uv add --editable <folder>` in the venv's folder
+  (`<home>/orgs/<org>/client_venvs/<client>/<n>/`), or remove the connection
+  and launch again.
+- Giving it again replaces the whole saved list, and no flag removes one.
 
 - **Settings** (`LauncherSettings`, flag > `TGZR_LAUNCHER_*` > closest `.env`
   > default): `--home-dir` (or `TGZR_HOME`, never from `.env`),
