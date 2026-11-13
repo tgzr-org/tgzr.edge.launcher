@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import threading
@@ -10,9 +11,18 @@ import time
 
 import pytest
 
-from tgzr.edge.home_manager import ClientSpec, Venv, pid_alive
+from tgzr.edge.home_manager import ClientSpec, Home, LastLaunch, OrgInfo, OrgUnreachable, Venv, pid_alive
 
-from tgzr.edge.launcher.core import ClientAlreadyRunning, LaunchError, SpecOverrides, launch, select_chain
+from tgzr.edge.launcher import core
+from tgzr.edge.launcher.core import (
+    ClientAlreadyRunning,
+    LaunchError,
+    SpecOverrides,
+    Target,
+    default_target,
+    launch,
+    select_chain,
+)
 
 from .conftest import ORG, fake_venv
 
@@ -23,7 +33,7 @@ def test_launch_current_and_record_launcher(home, chain, clients):
     assert pid_alive(r)
     assert chain.current_number() == 1 and chain.read_instance().pid == r
     assert home.launcher_command[-2:] == ["-m", "tgzr.edge.launcher"]
-    assert chain.org.touch is not None and home.org(ORG).last_used
+    assert home.last_launch == LastLaunch(ORG, "fake_client")
     log = (chain.logs_dir / "client-1.log").read_text()
     assert f"org={ORG}" in log and "tgzr.edge.launcher" in log  # TGZR_ORG and TGZR_LAUNCHER were set
 
@@ -176,7 +186,9 @@ def test_headless_errors(tmp_path, home):
     r = run("--home-dir", str(tmp_path / "nohome"), "--org", ORG, "--client", "x")
     assert r.returncode == 1 and "not a tgzr home" in r.stderr and not (tmp_path / "nohome").exists()
     r = run("--home-dir", str(home.path))
-    assert r.returncode == 1 and "--org is required" in r.stderr
+    assert r.returncode == 1 and "nothing to launch: give --org" in r.stderr
+    r = run("--home-dir", str(home.path), "--manage")
+    assert r.returncode == 1 and "give --headless or --manage, not both" in r.stderr
     r = run("--home-dir", str(tmp_path / "new"), "--create-home", "--org", ORG, "--client", "fake_client",
             "--find-links", str(tmp_path / "nowheels"), "--index-url", "https://invalid.invalid/simple")
     assert r.returncode == 1 and "created the tgzr home" in r.stderr and "could not build" in r.stderr
@@ -288,3 +300,118 @@ def test_default_index_only_for_a_new_spec(home):
     explicit = SpecOverrides(index_urls=("https://explicit/simple",), default_index_urls=("https://default/simple",))
     assert select_chain(home, "https://saved.test", "some_client", explicit).spec.index_urls == (
         "https://explicit/simple",)
+
+
+def test_default_target(tmp_path, home):
+    assert default_target(home) is None
+    assert default_target(home, default_org=" https://community.test ", default_client="c") == Target(
+        "https://community.test", "c")
+    chain = home.add_org(ORG).client("fake_client")
+    assert default_target(home, default_org="https://community.test") is None  # the home has an org: no default
+    chain.save_spec(ClientSpec("fake_client"))
+    home.last_launch = LastLaunch(ORG, "fake_client")
+    assert default_target(home, default_org="https://community.test") == Target(ORG, "fake_client")
+    assert default_target(home, client="other") == Target(ORG, "other")
+    chain.org.remove_client("fake_client")  # the last launch is gone with its chain
+    assert default_target(home) is None
+
+
+def test_headless_launches_the_last_one(home, chain, clients):
+    fake_venv(chain, 1)
+    home.last_launch = LastLaunch(ORG, "fake_client")
+    res = subprocess.run(
+        [sys.executable, "-m", "tgzr.edge.launcher", "--headless", "--home-dir", str(home.path),
+         "--ready-timeout", "20"], capture_output=True, text=True, timeout=60)
+    assert res.returncode == 0, res.stderr
+    clients.add(chain.read_instance().pid)
+
+
+def test_a_new_org_is_asked_for_its_name(home, monkeypatch):
+    asked: list[str] = []
+
+    def info(url, timeout):
+        asked.append(url)
+        return OrgInfo(url, "Acme", "0.200")
+
+    monkeypatch.setattr(core, "fetch_org_info", info)
+    chain = select_chain(home, ORG, "fake_client", SpecOverrides())
+    assert chain.org.name == "Acme" and home.org(ORG).name == "Acme"
+    select_chain(home, ORG, "fake_client", SpecOverrides())
+    assert asked == [ORG]  # only when the org is new
+
+    def down(url, timeout):
+        raise OrgUnreachable("down")
+
+    monkeypatch.setattr(core, "fetch_org_info", down)
+    assert select_chain(home, "https://down.test", "fake_client", SpecOverrides()).org.name == "https://down.test"
+
+
+def test_direct_target(tmp_path, monkeypatch):
+    from tgzr.edge.launcher.cli import direct_target
+    from tgzr.edge.launcher.settings import LauncherSettings
+
+    for k in list(os.environ):
+        if k.startswith("TGZR_"):
+            monkeypatch.delenv(k)
+    new = tmp_path / "new"
+    assert direct_target(LauncherSettings(home_dir=new)) is None and not new.exists()  # the page asks where
+    assert direct_target(LauncherSettings(home_dir=new, default_org="https://community.test")) == Target(
+        "https://community.test", "tgzr.edge.nice_client")
+    assert Home.open(new).orgs() == []  # created, the org is added by the launch
+    assert direct_target(LauncherSettings(home_dir=new, org=ORG, client="c")) == Target(ORG, "c")
+    home = Home.open(new)
+    home.add_org(ORG)
+    assert direct_target(LauncherSettings(home_dir=new, default_org="https://community.test")) is None
+
+
+def test_headless_no_browser_prints_the_link(home, chain, clients):
+    fake_venv(chain, 1)
+    res = subprocess.run(
+        [sys.executable, "-m", "tgzr.edge.launcher", "--headless", "--web", "--no-browser", "--home-dir",
+         str(home.path), "--org", ORG, "--client", "fake_client", "--ready-timeout", "20"],
+        capture_output=True, text=True, timeout=60)
+    assert res.returncode == 0, res.stderr
+    clients.add(chain.read_instance().pid)
+    assert res.stdout == "http://127.0.0.1:1/?launch=fake\n"  # the link alone; progress is on stderr
+
+
+def test_resolve_org(tmp_path, home, monkeypatch):
+    from tgzr.edge.home_manager import AmbiguousOrg, UnknownOrg
+
+    from tgzr.edge.launcher.cli import resolve_org
+    from tgzr.edge.launcher.settings import LauncherSettings
+
+    def resolved(org: str | None, home_dir=home.path) -> str | None:
+        return resolve_org(LauncherSettings(home_dir=home_dir, org=org)).org
+
+    home.add_org(ORG, "Acme")
+    assert resolved(None) is None
+    assert resolved("https://elsewhere.test") == "https://elsewhere.test"  # a URL is never looked up
+    assert resolved("Acme") == ORG and resolved(" acme ") == ORG
+    with pytest.raises(UnknownOrg, match=r"no org named 'Nope' .*\(known: Acme\); give its URL to add it"):
+        resolved("Nope")
+    home.add_org("https://acme2.test", "ACME")
+    with pytest.raises(AmbiguousOrg, match="https://acme2.test"):
+        resolved("acme")
+    with pytest.raises(UnknownOrg, match="is not a tgzr home yet"):
+        resolved("Acme", tmp_path / "nohome")
+    assert not (tmp_path / "nohome").exists()
+
+
+def test_headless_org_by_name(home, clients):
+    chain = home.add_org(ORG, "Acme").client("fake_client")
+    chain.save_spec(ClientSpec("fake_client"))
+    fake_venv(chain, 1)
+
+    def run(org: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, "-m", "tgzr.edge.launcher", "--headless", "--home-dir", str(home.path), "--org", org,
+             "--ready-timeout", "20"], capture_output=True, text=True, timeout=60)
+
+    res = run("Nope")
+    assert res.returncode == 1 and "no org named 'Nope'" in res.stderr and "known: Acme" in res.stderr
+    assert [o.url for o in home.orgs()] == [ORG]  # a name never adds an org
+    res = run("acme")
+    assert res.returncode == 0, res.stderr
+    clients.add(chain.read_instance().pid)
+    assert chain.is_running()

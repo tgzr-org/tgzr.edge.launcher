@@ -1,15 +1,43 @@
 # tgzr.edge.launcher
 
-Starts a TGZR client for an org, then exits (org spec D51). It creates the
-tgzr home, builds the client's first venv with uv, starts the client
+Starts a TGZR client for an org, then exits (org spec D51, D59). It creates
+the tgzr home, builds the client's first venv with uv, starts the client
 detached, waits for its ready signal, and falls back to the previous venv
 when a new one fails.
 
 ```bash
-tgzr.edge.launcher                          # a local page: create the home, launch a client
+tgzr.edge.launcher                          # launch the client used last, showing only the progress
+tgzr.edge.launcher --org https://org.example.com --client tgzr.edge.nice_client   # launch this one
+tgzr.edge.launcher --manage                 # the page: create the home, the known connections, add one
 tgzr.edge.launcher --headless --create-home --home-dir ~/tgzr_home \
     --org https://org.example.com --client tgzr.edge.nice_client --client-version ">=0.1,<1"
 ```
+
+**What is launched:** `--org` (and `--client`), else the (org, client)
+launched last (`last_launch` in `tgzr_home.json`), else, in a home without
+any org, `--default-org`. The built-in default org is empty until the
+community org is hosted; set `TGZR_LAUNCHER_DEFAULT_ORG` (or `--default-org`)
+to choose one, or to an empty value to have none.
+
+`--org` takes a URL, or the name of an org already in the home (`--org Acme`;
+case is ignored). A name that matches no org, or several, is an error: only
+a URL adds an org.
+
+**Three ways to run:**
+
+- **Direct start** (no `--manage`, no `--headless`): a small window, or a
+  browser tab with `--web`, shows the progress of the launch. On success the
+  window closes (the tab goes to the client). The home is created when it is
+  missing. If the launch fails, the window stays with the error and a
+  **Manage connections** button leading to the page. With nothing to launch
+  (no `--org`, no last launch, no default org), the page is shown.
+- **`--manage`**: the page (below).
+- **`--headless`**: no window. A missing home is an error unless
+  `--create-home`. With `--web --no-browser`, the client opens no browser
+  tab: its one-time link is printed alone on standard output (progress goes
+  to standard error). This is how the Orgs Connections app
+  ([`tgzr.edge.nice_apps.orgs_connections`](../tgzr.edge.nice_apps.orgs_connections))
+  opens another org from inside a client.
 
 Development, from `workspace_dev` (the client and its unpublished siblings,
 editable):
@@ -23,7 +51,7 @@ uv run tgzr.edge.launcher --home-dir /tmp/th --org http://127.0.0.1:8000 --clien
 
 - **Settings** (`LauncherSettings`, flag > `TGZR_LAUNCHER_*` > closest `.env`
   > default): `--home-dir` (or `TGZR_HOME`, never from `.env`),
-  `--create-home`, `--org`, `--client`, `--client-version`, `--extra`,
+  `--create-home`, `--org`, `--default-org`, `--manage`, `--client`, `--client-version`, `--extra`,
   `--index-url`, `--find-links`, `--editable` (repeatable), `--default-index-url`,
   `--headless`,
   `--native` (the default: this page in a native window that stays open, and
@@ -39,8 +67,11 @@ uv run tgzr.edge.launcher --home-dir /tmp/th --org http://127.0.0.1:8000 --clien
   default `https://pi.alpha.tgzr.net/tgzr/beta`), else PyPI when that is empty.
   A client launched before keeps the index saved in its `client.json`, unless
   `--index-url` is given.
-- **The page**: a launch form (with a *Native window* checkbox) and the known
-  clients. A running client is marked *running* and has **Browse** (this tab
+- A new org is asked for its name (its public `/info`); when it does not
+  answer, its URL is shown instead.
+- **The page** (`--manage`): a launch form (with a *Native window* checkbox) and the known
+  clients. The one a start without `--org` launches (the one launched last) is
+  marked *default*. A running client is marked *running* and has **Browse** (this tab
   opens it through a new one-time link) and **Stop** (after a confirmation; SIGTERM, then SIGKILL
   after 10 s). The list follows changes made elsewhere (every 2 s). In the
   browser, launching navigates the tab to the client and the launcher exits;

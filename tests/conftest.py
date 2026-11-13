@@ -66,3 +66,16 @@ def clients():
     c = Clients()
     yield c
     c.kill_all()
+
+
+@pytest.fixture(autouse=True)
+def _no_org_info(monkeypatch):
+    """New orgs are not asked for their name (no network in tests)."""
+    from tgzr.edge.home_manager import OrgUnreachable
+
+    from tgzr.edge.launcher import core
+
+    def unreachable(url, timeout=0.0):
+        raise OrgUnreachable(f"{url}: no network in tests")
+
+    monkeypatch.setattr(core, "fetch_org_info", unreachable)

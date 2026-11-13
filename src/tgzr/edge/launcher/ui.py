@@ -1,5 +1,13 @@
 """The launcher's page (127.0.0.1 only, behind the local access guard).
 
+With something to launch (``auto``: see :func:`tgzr.edge.launcher.cli.direct_target`),
+the page is a splash: it launches at once and shows the progress. On success
+a native window closes, and a browser tab goes to the client. When the launch
+fails, or the client is already running in a native launcher, it stays, with
+**Manage connections** leading to the page below.
+
+Otherwise (``--manage``, or nothing to launch):
+
 * No home yet: ask where to create it (prefilled with the resolved home dir).
 * Otherwise: the known (org, client) chains as cards, each with Launch, and
   a **+** button opening the "Add a connection" dialog (org URL and client
@@ -10,7 +18,8 @@
 * When the client is already running, this tab asks it for a new one-time
   link (``ClientChain.request_link``) and goes there instead of failing.
   Known clients that are running are marked so (refreshed every few
-  seconds); their buttons are **Browse** and **Stop** (SIGTERM, then
+  seconds), and the one a start without an org launches (the one launched
+  last) has a **default** badge; their buttons are **Browse** and **Stop** (SIGTERM, then
   SIGKILL after a few seconds).
 * **Native window** (ticked unless ``--web``) starts the client in a native
   window; unticked, in the browser.
@@ -55,6 +64,7 @@ from tgzr.edge.launcher.core import (
     LaunchError,
     LaunchResult,
     SpecOverrides,
+    Target,
     client_env,
     launch,
     launcher_command,
@@ -62,13 +72,14 @@ from tgzr.edge.launcher.core import (
 )
 from tgzr.edge.launcher.reloader import reload_child, supervise
 from tgzr.edge.launcher.guard import LaunchTokens, LocalAccessGuard
-from tgzr.edge.launcher.settings import LauncherSettings, load_settings
+from tgzr.edge.launcher.settings import DEFAULT_CLIENT, LauncherSettings, load_settings
 
 log = logging.getLogger("tgzr.edge.launcher.ui")
 
 TITLE = "TGZR Launcher"
 RUNNING_POLL = 2.0  # seconds: how often the known clients' running state is refreshed
-DEFAULT_CLIENT = "tgzr.edge.nice_client"
+PAGE_SIZE = (900, 820)  # the native window showing the page (--manage)
+SPLASH_SIZE = (760, 520)  # the splash; kept when it gives way to the page (Manage connections)
 
 
 @dataclass
@@ -82,6 +93,9 @@ class LauncherState:
     link_fn: Callable[[ClientChain], str] = field(default=lambda chain: chain.request_link())
     stop_fn: Callable[[ClientChain], bool] = field(default=lambda chain: chain.stop())
     stay_open: bool = False  # native: the page stays after a launch or a browse
+    auto: Target | None = None  # launch this at once, showing only the progress (the splash)
+    overrides: SpecOverrides = SpecOverrides()  # the flags' client spec, for ``auto``
+    auto_started: bool = False
     done: list[LaunchResult] = field(default_factory=list)
     opened: list[str] = field(default_factory=list)  # links to clients found already running
 
@@ -129,12 +143,112 @@ async def root() -> None:
     def draw() -> None:
         body.clear()
         with body:
-            if is_home(state().home_path):
+            if state().auto is not None:
+                splash_page(draw)
+            elif is_home(state().home_path):
                 launch_page()
             else:
                 create_home_page(draw)
 
     draw()
+
+
+def splash_page(redraw: Callable[[], None]) -> None:
+    """Launch ``state().auto`` at once and show the progress."""
+    st = state()
+    target = st.auto
+    assert target is not None
+    ui.label("Starting TGZR").classes("text-xl").mark("splash-title")
+    ui.label(target.org).classes("opacity-70").mark("splash-org")
+    status = ui.column().classes("w-full gap-1")
+
+    def manage() -> None:
+        st.auto = None
+        redraw()
+
+    def manage_button() -> None:
+        ui.button("Manage connections", on_click=manage).props("flat").mark("manage")
+
+    def failed(text: str, log_path: Path | None = None) -> None:
+        with status:
+            ui.label(text).classes("text-negative whitespace-pre-wrap").mark("launch-error")
+            if log_path:
+                ui.label(f"Client log: {log_path}").classes("opacity-70").mark("log-path")
+            manage_button()
+
+    async def open_running(chain: ClientChain) -> None:
+        try:
+            url = await run.io_bound(st.link_fn, chain)
+        except NoLink as e:
+            failed(f"{chain.slug} is running for {chain.org.url}, but it gives no link: {e}")
+            return
+        st.opened.append(url)
+        st.navigate(url)
+        if not st.stay_open:
+            st.on_done()
+
+    async def already_running(chain: ClientChain) -> None:
+        if not st.stay_open:  # a browser tab: go there
+            await open_running(chain)
+            return
+        with status:  # a native launcher: the client has its own window, or runs in the browser
+            ui.label(f"{chain.org.name} is already open.").mark("already-running")
+            with ui.row().classes("gap-1"):
+                ui.button("Open in the browser", on_click=lambda: open_running(chain)).props("flat").mark(
+                    "open-running")
+                manage_button()
+
+    if st.auto_started:  # the page was opened again: one launch per launcher
+        with status:
+            ui.label("This launcher has already started its client.").mark("already-started")
+            manage_button()
+        return
+    st.auto_started = True
+
+    async def go() -> None:
+        with status:
+            spinner = ui.spinner()
+            lines = ui.log(max_lines=50).classes("w-full h-40").mark("progress")
+        messages: list[str] = []
+
+        def push() -> None:
+            while messages:
+                lines.push(messages.pop(0))
+
+        timer = ui.timer(0.2, push)
+        try:
+            home = Home.open(st.home_path)
+            chain = await run.io_bound(select_chain, home, target.org, target.client, st.overrides)
+            # Settings for this launch come from the chain folder's closest .env.
+            settings = load_settings(st.argv, focus=chain.path) if st.argv is not None else st.settings
+            try:
+                result = await run.io_bound(
+                    st.launch_fn, home, chain, switch_to=settings.switch_to, ready_timeout=settings.ready_timeout,
+                    progress=messages.append,
+                    client_env=client_env(native=settings.use_native, hand_over_link=True, reload=settings.reload))
+            except ClientAlreadyRunning:
+                push()
+                await already_running(chain)
+                return
+        except LaunchError as e:
+            push()
+            failed(f"Launch failed: {e}", e.log_path)
+            return
+        except (HomeError, ValueError) as e:
+            failed(f"Launch failed: {e}")
+            return
+        finally:
+            timer.cancel()
+            spinner.delete()
+        push()
+        st.done.append(result)
+        with status:
+            ui.label(f"{chain.org.name} is ready.").mark("launched")
+        if result.url:
+            st.navigate(result.url)
+        st.on_done()
+
+    ui.timer(0.1, go, once=True)
 
 
 def create_home_page(redraw: Callable[[], None]) -> None:
@@ -315,22 +429,28 @@ def launch_page() -> None:
         if chosen is not None:  # closed first: the launch's progress and result show on the page
             await do_launch(*chosen)
 
-    shown: dict[str, list[tuple[str, bool]]] = {"snapshot": []}
+    shown: dict[str, list[tuple[str, bool, bool]]] = {"snapshot": []}
 
     def known() -> list[ClientChain]:
         return [c for o in home.orgs() for c in o.clients() if c.spec is not None]
 
-    def snapshot(chains: list[ClientChain]) -> list[tuple[str, bool]]:
-        return [(f"{c.org.slug}/{c.slug}", c.is_running()) for c in chains]
+    def is_default(chain: ClientChain) -> bool:
+        """What a start without an org launches: the one launched last."""
+        last = home.last_launch
+        return last is not None and last.org == chain.org.url and last.client == chain.slug
+
+    def snapshot(chains: list[ClientChain]) -> list[tuple[str, bool, bool]]:
+        return [(f"{c.org.slug}/{c.slug}", c.is_running(), is_default(c)) for c in chains]
 
     @ui.refreshable
     def known_clients() -> None:
         chains = known()  # other launchers may add chains
         snap = snapshot(chains)
         shown["snapshot"] = snap
-        states = [running for _, running in snap]
+        states = [running for _, running, _ in snap]
+        defaults = [default for _, _, default in snap]
         with ui.row().classes("gap-2 items-stretch"):
-            for c, running in zip(chains, states, strict=True):
+            for c, running, default in zip(chains, states, defaults, strict=True):
                 cur = c.current_number()
                 key = f"{c.org.slug}-{c.slug}"
                 with ui.card().mark(f"chain-{key}"):
@@ -340,6 +460,10 @@ def launch_page() -> None:
                             if running:
                                 ui.chip("running", icon="play_circle", color="positive").props(
                                     "dense outline").mark(f"running-{key}")
+                            if default:
+                                ui.chip("default", icon="star").props("dense outline").mark(
+                                    f"default-{key}").tooltip(
+                                    "Started when the launcher is run without an org: the connection launched last")
                         ui.label(f"{c.slug} · venv {cur if cur is not None else '-'}").classes("opacity-70 text-sm")
 
                     def make(chain: ClientChain = c, is_running: bool = running) -> Callable[[], Any]:
@@ -367,9 +491,11 @@ def launch_page() -> None:
     status.move(target_index=-1)
 
 
-def run_ui(argv: Sequence[str] | None, settings: LauncherSettings) -> int:
+def run_ui(argv: Sequence[str] | None, settings: LauncherSettings, *, auto: Target | None = None,
+           overrides: SpecOverrides = SpecOverrides()) -> int:
     """Serve the page until a launch succeeds (exit 0) or the user stops it
-    (closes the native window, or Ctrl-C)."""
+    (closes the native window, or Ctrl-C). With ``auto``, the page is the
+    splash launching it: a native window then closes after the launch too."""
     import uvicorn
 
     args = list(argv) if argv is not None else sys.argv[1:]
@@ -392,10 +518,13 @@ def run_ui(argv: Sequence[str] | None, settings: LauncherSettings) -> int:
     tokens = LaunchTokens()
     server: uvicorn.Server | None = None
 
-    def done() -> None:  # browser mode only: native stays open
+    def done() -> None:  # the browser, or the native splash: the native page stays open
         def later() -> None:
             time.sleep(1.5)  # let the page show the result
-            if server is not None:
+            if webview is not None:
+                for window in list(webview.windows):
+                    window.destroy()  # webview.start() returns, which stops the server
+            elif server is not None:
                 server.should_exit = True
 
         threading.Thread(target=later, daemon=True).start()
@@ -407,6 +536,8 @@ def run_ui(argv: Sequence[str] | None, settings: LauncherSettings) -> int:
         argv=args,
         on_done=done,
         theme_manager=theme_manager,
+        auto=auto,
+        overrides=overrides,
     )
     if settings.use_native:
         st.stay_open = True
@@ -436,14 +567,15 @@ def run_ui(argv: Sequence[str] | None, settings: LauncherSettings) -> int:
                 print("tgzr.edge.launcher: the local server failed to start", file=sys.stderr)
                 return 1
             time.sleep(0.05)
-        webview.create_window(TITLE, url, width=900, height=820)
+        width, height = SPLASH_SIZE if auto is not None else PAGE_SIZE
+        webview.create_window(TITLE, url, width=width, height=height)
         # The window/taskbar icon: the page favicon (NiceGUI's). Honoured on Qt, GTK and WinForms.
         import nicegui
         icon = Path(nicegui.__file__).parent / "static" / "favicon.ico"
         webview.start(icon=str(icon))  # until the user closes the window
         server.should_exit = True
         thread.join(timeout=5)
-        return 0
+        return 0 if auto is None or st.done or st.opened else 1
     threading.Thread(target=opened, daemon=True).start()
     server.run(sockets=[sock])
     return 0 if st.done or st.opened else 1

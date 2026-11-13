@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from contextlib import asynccontextmanager
 
@@ -9,11 +10,11 @@ import httpx
 from nicegui.testing.general import nicegui_reset_globals
 from nicegui.testing.user import User
 
-from tgzr.edge.home_manager import ClientSpec, Home, Venv
+from tgzr.edge.home_manager import ClientSpec, Home, LastLaunch, Venv
 
 from tgzr.edge.home_manager import NoLink
 
-from tgzr.edge.launcher.core import ClientAlreadyRunning, LaunchError, LaunchResult
+from tgzr.edge.launcher.core import ClientAlreadyRunning, LaunchError, LaunchResult, SpecOverrides, Target
 from tgzr.edge.launcher.guard import LaunchTokens
 from tgzr.edge.launcher.settings import LauncherSettings
 from tgzr.edge.launcher.ui import LauncherState, create_app
@@ -275,3 +276,105 @@ async def test_a_refresh_keeps_the_open_dialog(tmp_path):
         chain.save_spec(ClientSpec("tgzr.edge.nice_client"))  # the known clients refresh
         await user.should_see(marker=f"chain-{chain.org.slug}-{chain.slug}", retries=50)
         assert user.find(marker="org-url").elements.pop().value == ORG  # still open, still filled
+
+
+# -- the splash (a direct start) ------------------------------------------------------
+
+
+def _known_chain(home: Home):
+    chain = home.add_org(ORG, name="Acme").client("tgzr.edge.nice_client")
+    chain.save_spec(ClientSpec("tgzr.edge.nice_client"))
+    return chain
+
+
+async def test_splash_launches_at_once(tmp_path):
+    home = Home.create(tmp_path / "h")
+    _known_chain(home)
+    fake = FakeLaunch()
+    async with launcher_env(tmp_path, home.path, fake) as (user, st, done):
+        st.auto = Target(ORG, None)
+        await user.open("/")
+        await user.should_see(marker="splash-title")
+        await user.should_see("Acme is ready.", marker="launched", retries=50)
+        await user.should_not_see(marker="add-connection")  # not the page
+        assert fake.calls == [(ORG, "tgzr.edge.nice_client")] and done == [1]
+        assert st.navigated == ["http://127.0.0.1:5555/?launch=tok"]  # the tab goes to the client
+        await user.open("/")  # opened again: no second launch
+        await user.should_see(marker="already-started")
+        assert len(fake.calls) == 1
+
+
+async def test_splash_adds_a_new_org_from_the_flags(tmp_path):
+    home = Home.create(tmp_path / "h")
+    fake = FakeLaunch()
+    async with launcher_env(tmp_path, home.path, fake) as (user, st, done):
+        st.auto = Target(ORG, "tgzr.edge.nice_client")
+        st.overrides = SpecOverrides(package="tgzr.edge.nice_client", version=">=0.2", default_index_urls=("https://i/",))
+        await user.open("/")
+        await user.should_see(marker="launched", retries=50)
+        spec = home.org(ORG).client("tgzr.edge.nice_client").spec
+        assert spec.version == ">=0.2" and spec.index_urls == ("https://i/",)
+
+
+async def test_splash_failure_leads_to_the_page(tmp_path):
+    home = Home.create(tmp_path / "h")
+    _known_chain(home)
+    fake = FakeLaunch(LaunchError("no venv", tmp_path / "client.log"))
+    async with launcher_env(tmp_path, home.path, fake) as (user, st, done):
+        st.auto = Target(ORG, None)
+        await user.open("/")
+        await user.should_see("Launch failed: no venv", retries=50)
+        await user.should_see(marker="log-path")
+        assert done == []
+        user.find(marker="manage").click()
+        await user.should_see(marker="add-connection", retries=20)
+        await user.should_see(marker=chain_marker(home))
+        assert st.auto is None
+
+
+async def test_splash_already_running_in_the_browser_goes_there(tmp_path):
+    home = Home.create(tmp_path / "h")
+    _known_chain(home)
+    async with launcher_env(tmp_path, home.path, FakeLaunch(ClientAlreadyRunning("running"))) as (user, st, done):
+        st.auto = Target(ORG, None)
+        st.link_fn = lambda chain: "http://127.0.0.1:7777/?launch=again"
+        await user.open("/")
+        for _ in range(50):
+            if st.navigated:
+                break
+            await asyncio.sleep(0.1)
+        assert st.navigated == ["http://127.0.0.1:7777/?launch=again"] and done == [1]
+
+
+async def test_splash_already_running_in_a_native_launcher_stays(tmp_path):
+    home = Home.create(tmp_path / "h")
+    _known_chain(home)
+    async with launcher_env(tmp_path, home.path, FakeLaunch(ClientAlreadyRunning("running")), web=False) as (
+            user, st, done):
+        st.auto = Target(ORG, None)
+        st.stay_open = True
+        st.link_fn = lambda chain: "http://127.0.0.1:7777/?launch=again"
+        await user.open("/")
+        await user.should_see("Acme is already open.", marker="already-running", retries=50)
+        assert st.navigated == [] and done == []
+        user.find(marker="open-running").click()
+        for _ in range(50):
+            if st.navigated:
+                break
+            await asyncio.sleep(0.1)
+        assert st.navigated == ["http://127.0.0.1:7777/?launch=again"] and done == []
+
+
+async def test_the_default_connection_has_a_badge(tmp_path):
+    home = Home.create(tmp_path / "h")
+    chain = _known_chain(home)
+    other = home.add_org("https://other.test", name="Other").client("tgzr.edge.nice_client")
+    other.save_spec(ClientSpec("tgzr.edge.nice_client"))
+    home.last_launch = LastLaunch(ORG, chain.slug)
+    async with launcher_env(tmp_path, home.path, FakeLaunch()) as (user, st, done):
+        await user.open("/")
+        await user.should_see("default", marker=f"default-{chain.org.slug}-{chain.slug}")
+        await user.should_not_see(marker=f"default-{other.org.slug}-{other.slug}")
+        home.last_launch = LastLaunch("https://other.test", other.slug)  # another launcher started the other one
+        await user.should_see(marker=f"default-{other.org.slug}-{other.slug}", retries=50)
+        await user.should_not_see(marker=f"default-{chain.org.slug}-{chain.slug}")

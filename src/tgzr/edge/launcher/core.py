@@ -1,5 +1,7 @@
 """The launch flow (D51), shared by the headless command and the UI.
 
+0. Without ``--org``: the (org, client) launched last, else, in a home
+   without any org, the default org (:func:`default_target`).
 1. Find or create the org record and the client chain; save the client spec
    when flags change it.
 2. Fail if the (org, client) instance lock is held.
@@ -9,8 +11,9 @@
 4. Start the client detached and wait for its ready signal. A venv that
    fails is renamed ``<n>_failing`` and the previous working one is started
    instead; if there is none, or it fails too, the launch fails.
-5. On success: prune, record the launcher command in ``tgzr_home.json``,
-   and return. The launcher never stays alive.
+5. On success: prune, record the launcher command and this (org, client)
+   as the last launch in ``tgzr_home.json``, and return. The launcher never
+   stays alive.
 """
 
 from __future__ import annotations
@@ -33,10 +36,13 @@ from tgzr.edge.home_manager import (
     ClientChain,
     ClientSpec,
     Home,
+    HomeError,
     InstanceInfo,
+    LastLaunch,
     LaunchInProgress,
     NoSuchVenv,
     Venv,
+    fetch_org_info,
     spawn_detached,
     wait_pid,
 )
@@ -45,6 +51,7 @@ EXIT_FAILED = 1
 EXIT_ALREADY_RUNNING = 3  # also what a client exits with when its instance lock is held
 LAUNCH_LOCK_TIMEOUT = 900.0  # seconds: another launcher of the chain may be building its first venv
 POLL = 0.2
+ORG_INFO_TIMEOUT = 3.0  # seconds: asking a new org for its name
 
 Progress = Callable[[str], None]
 
@@ -80,6 +87,27 @@ class SpecOverrides:
     @property
     def any(self) -> bool:
         return bool(self.version is not None or self.extras or self.index_urls or self.find_links or self.editable)
+
+
+@dataclass(frozen=True)
+class Target:
+    """What to launch: an org URL and a client (``None``: the org's only one)."""
+
+    org: str
+    client: str | None = None
+
+
+def default_target(home: Home, *, client: str | None = None, default_org: str = "",
+                   default_client: str = "") -> Target | None:
+    """What to launch when no org is given: the (org, client) launched last,
+    else ``default_org`` when the home has no org yet, else ``None``.
+    ``client`` (``--client``) replaces the client of either."""
+    last = home.last_launch
+    if last is not None:
+        return Target(last.org, client or last.client)
+    if default_org.strip() and not home.orgs():
+        return Target(default_org.strip(), client or default_client or None)
+    return None
 
 
 @dataclass(frozen=True)
@@ -130,8 +158,16 @@ def _absolute(paths: Sequence[str]) -> tuple[str, ...]:
 
 
 def select_chain(home: Home, org_url: str, client: str | None, overrides: SpecOverrides) -> ClientChain:
-    """Find or create the org record and the client chain, and save the spec."""
-    org = home.add_org(org_url)
+    """Find or create the org record and the client chain, and save the
+    spec. A new org is asked for its name (its ``/info``); when it does not
+    answer, its URL is its name."""
+    name = None
+    if not home.has_org(org_url):
+        try:
+            name = fetch_org_info(org_url, timeout=ORG_INFO_TIMEOUT).name
+        except HomeError:
+            pass
+    org = home.add_org(org_url, name)
     if client is None:
         chains = [c for c in org.clients() if c.spec is not None]
         if len(chains) != 1:
@@ -276,7 +312,7 @@ def _launch_locked(
             fell_back = True
     chain.prune()
     home.launcher_command = launcher_command()
-    chain.org.touch()
+    home.last_launch = LastLaunch(chain.org.url, chain.slug)
     progress(f"{chain.slug} is {'ready' if ready else 'done'} (venv {venv.number})")
     return LaunchResult(venv, proc.pid, exited=ready is None, fell_back=fell_back,
                         url=ready.url if ready is not None else None)
@@ -293,6 +329,8 @@ __all__ = [
     "LaunchError",
     "LaunchResult",
     "SpecOverrides",
+    "Target",
+    "default_target",
     "launch",
     "launcher_command",
     "select_chain",

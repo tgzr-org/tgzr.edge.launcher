@@ -19,6 +19,10 @@ from tgzr.edge.home_manager import ENV_HOME, closest_env_file, home_dir_from, is
 
 # Where new clients install from when no --index-url is given (empty: PyPI).
 DEFAULT_INDEX_URL = "https://pi.alpha.tgzr.net/tgzr/beta"
+# The org a home without any org starts with (the community org). Empty: none,
+# the page asks for an org.
+DEFAULT_ORG_URL = ""
+DEFAULT_CLIENT = "tgzr.edge.nice_client"
 
 
 class LauncherSettings(BaseSettings):
@@ -33,7 +37,11 @@ class LauncherSettings(BaseSettings):
 
     home_dir: Path | None = Field(None, description="the tgzr home (env TGZR_HOME; default ~/tgzr_home)")
     create_home: CliToggleFlag[bool] = Field(False, description="headless: create the home if it does not exist")
-    org: str | None = Field(None, description="the org URL")
+    org: str | None = Field(None, description="the org: its URL, or the name of an org of the home (default: the one launched last)")
+    default_org: str = Field(
+        DEFAULT_ORG_URL, description="the org to launch when the home has none yet (empty: ask on the page)")
+    manage: CliToggleFlag[bool] = Field(
+        False, description="show the page (the known connections, add one) instead of launching")
     client: str | None = Field(None, description="the client distribution, e.g. tgzr.edge.nice_client")
     client_version: str | None = Field(None, description="a version specifier for the client, e.g. '>=0.1,<1'")
     extra: list[str] = Field([], description="more requirements for the client venv (repeatable)")
@@ -43,7 +51,7 @@ class LauncherSettings(BaseSettings):
         description=f"the index for a new client when no --index-url is given (default {DEFAULT_INDEX_URL}; empty: PyPI)")
     find_links: list[str] = Field([], description="a folder of local wheels (repeatable)")
     editable: list[str] = Field([], description="install from this local project folder, editable (repeatable)")
-    headless: CliToggleFlag[bool] = Field(False, description="no UI: launch from the flags, or fail")
+    headless: CliToggleFlag[bool] = Field(False, description="no window at all: launch, or fail")
     native: CliToggleFlag[bool] = Field(
         False, description="native windows for this launcher and the clients it starts (the default)")
     web: CliToggleFlag[bool] = Field(
@@ -56,7 +64,8 @@ class LauncherSettings(BaseSettings):
     wait_pid_timeout: float = Field(60.0, description="seconds to wait for --wait-pid")
     ready_timeout: float = Field(60.0, description="seconds to wait for the client's ready signal")
     port: int = Field(0, description="the launcher UI's local port (default: a free one)")
-    no_browser: CliToggleFlag[bool] = Field(False, description="UI: print a one-time link instead of opening the browser")
+    no_browser: CliToggleFlag[bool] = Field(False, description="print a one-time link instead of opening the browser: the page's, or, with --headless --web, "
+                    "the client's (alone on standard output)")
 
     @classmethod
     def settings_customise_sources(
@@ -79,6 +88,8 @@ class LauncherSettings(BaseSettings):
             raise ValueError("give --native or --web, not both")
         if self.native and self.reload:
             raise ValueError("--reload implies --web: do not give --native with it")
+        if self.headless and self.manage:
+            raise ValueError("give --headless or --manage, not both")
         return self
 
     @property
