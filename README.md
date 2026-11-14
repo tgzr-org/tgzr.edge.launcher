@@ -105,7 +105,9 @@ your daily one.
   ready or failed; another launcher waits (up to 15 min: it may be building
   the first venv), then finds the client running.
 - The first launch saves the client spec in `client.json`; later launches
-  reuse it, and flags given again override it.
+  reuse it, and flags given again override it. The launcher builds a venv
+  only for a connection without a working one: to move to a new client
+  release, use **Check for new versions** on the client's Updates page.
 - **Exit codes**: 0 launched (or the client finished with 0), 1 failed (the
   message names the client log), 3 the client is already running.
 - The client gets `TGZR_HOME`, `TGZR_ORG`, `TGZR_CLIENT` and `TGZR_LAUNCHER`,
