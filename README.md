@@ -67,10 +67,9 @@ your daily one.
   (the second case above), name it with `--extra`, or the client fails to
   start ("No module named ...").
 - It is used when a venv is **built**. On a connection that already has a
-  venv it is saved in `client.json` but not applied: run
-  `uv add --editable <folder>` in the venv's folder
-  (`<home>/orgs/<org>/client_venvs/<client>/<n>/`), or remove the connection
-  and launch again.
+  venv it is saved in `client.json` but not applied: add the folder on the
+  client's Packages page (`/apps/manage/packages`, installed editable), or
+  remove the connection and launch again.
 - Giving it again replaces the whole saved list, and no flag removes one.
 
 - **Settings** (`LauncherSettings`, flag > `TGZR_LAUNCHER_*` > closest `.env`

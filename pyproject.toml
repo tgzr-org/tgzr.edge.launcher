@@ -10,8 +10,8 @@ dependencies = [
     "pywebview[qt]>=5",  # --native: the launcher's page in a desktop window
     "pydantic-settings>=2.16",
     "watchfiles>=0.21",  # --reload
-    "tgzr.edge.home_manager>=0.200",  # last launch, org info and lookup by name (D59)
-    "tgzr.libs.nice>=0.200",  # built-in TGZR theme, DEFAULT_MODE
+    "tgzr.edge.home_manager>=0.201",  # pid_alive: an exited, uncollected client is not running
+    "tgzr.libs.nice>=0.201",  # tools.native.prepare_native_window
     "tgzr.libs.package_management>=0.102",
 ]
 

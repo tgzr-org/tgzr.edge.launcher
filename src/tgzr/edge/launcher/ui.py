@@ -572,6 +572,9 @@ def run_ui(argv: Sequence[str] | None, settings: LauncherSettings, *, auto: Targ
         # The window/taskbar icon: the page favicon (NiceGUI's). Honoured on Qt, GTK and WinForms.
         import nicegui
         icon = Path(nicegui.__file__).parent / "static" / "favicon.ico"
+        from tgzr.libs.nice.tools.native import prepare_native_window
+
+        prepare_native_window()  # a page asking for a permission would crash pywebview's Qt window
         webview.start(icon=str(icon))  # until the user closes the window
         server.should_exit = True
         thread.join(timeout=5)

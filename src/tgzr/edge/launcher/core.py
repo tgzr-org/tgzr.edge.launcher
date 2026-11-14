@@ -22,6 +22,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -310,6 +311,9 @@ def _launch_locked(
                 raise LaunchError(f"{e}; there is no previous working venv to go back to", e.log_path) from e
             venv = chain.switch(previous.number)
             fell_back = True
+    # A launcher that stays open (the page) must collect the client when it exits:
+    # until then the client is a zombie, which still has a pid.
+    threading.Thread(target=proc.wait, name="tgzr-client-wait", daemon=True).start()
     chain.prune()
     home.launcher_command = launcher_command()
     home.last_launch = LastLaunch(chain.org.url, chain.slug)
