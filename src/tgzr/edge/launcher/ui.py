@@ -54,6 +54,7 @@ from fastapi import FastAPI
 from nicegui import run, ui
 
 from tgzr.libs.nice.branding.tgzr_branding import TGZRBranding
+from tgzr.libs.nice.tools.stop_notice import NoticeServer, stop_notice_head
 from tgzr.libs.nice.tools.themes import ThemeManager
 
 
@@ -80,6 +81,8 @@ TITLE = "TGZR Launcher"
 RUNNING_POLL = 2.0  # seconds: how often the known clients' running state is refreshed
 PAGE_SIZE = (900, 820)  # the native window showing the page (--manage)
 SPLASH_SIZE = (760, 520)  # the splash; kept when it gives way to the page (Manage connections)
+GIVE_UP_AFTER = 60.0  # seconds: a page whose launcher died without notice stops reconnecting (D66)
+STOPPED_MESSAGE = f"{TITLE} has closed. You can close this tab."
 
 
 @dataclass
@@ -105,6 +108,7 @@ class LauncherState:
 
 
 _STATE: LauncherState | None = None
+_STOP_NOTICE = ""  # the head script that stops a page whose launcher stopped (D66)
 
 
 def state() -> LauncherState:
@@ -114,9 +118,13 @@ def state() -> LauncherState:
 
 
 def create_app(st: LauncherState, *, launch_tokens: LaunchTokens, allowed_hosts: set[str], cookie_name: str,
-               cookie_secret: str | None = None) -> FastAPI:
-    global _STATE
+               cookie_secret: str | None = None, give_up_after: float | None = GIVE_UP_AFTER) -> FastAPI:
+    """``give_up_after``: seconds a page that lost the launcher keeps reconnecting
+    (``None``: forever, for ``--reload``, whose launcher comes back on the same port)."""
+    global _STATE, _STOP_NOTICE
     _STATE = st
+    _STOP_NOTICE = stop_notice_head(give_up_after=give_up_after,
+                                    lost_message=f"Lost the connection to {TITLE}. You can close this tab.")
     app = FastAPI(openapi_url=None, docs_url=None, redoc_url=None)
     ui.run_with(app, root=root, title=TITLE, show_welcome_message=False, reconnect_timeout=30)
     app.add_middleware(LocalAccessGuard, launch_tokens=launch_tokens, allowed_hosts=allowed_hosts,
@@ -130,6 +138,7 @@ def _lines(text: str) -> tuple[str, ...]:
 
 
 async def root() -> None:
+    ui.add_head_html(_STOP_NOTICE)
     branding = TGZRBranding.get()  # once per process
     branding.apply()
 
@@ -516,7 +525,7 @@ def run_ui(argv: Sequence[str] | None, settings: LauncherSettings, *, auto: Targ
     sock.bind(("127.0.0.1", child.port if child else settings.port))
     port = sock.getsockname()[1]
     tokens = LaunchTokens()
-    server: uvicorn.Server | None = None
+    server: NoticeServer | None = None
 
     def done() -> None:  # the browser, or the native splash: the native page stays open
         def later() -> None:
@@ -543,8 +552,11 @@ def run_ui(argv: Sequence[str] | None, settings: LauncherSettings, *, auto: Targ
         st.stay_open = True
         st.navigate = webbrowser.open  # the window stays a launcher: clients open in the system browser
     app = create_app(st, launch_tokens=tokens, allowed_hosts={f"127.0.0.1:{port}"},
-                     cookie_name=f"tgzr.edge.launcher_{port}", cookie_secret=child.cookie_secret if child else None)
-    server = uvicorn.Server(uvicorn.Config(app, log_level="warning"))
+                     cookie_name=f"tgzr.edge.launcher_{port}", cookie_secret=child.cookie_secret if child else None,
+                     give_up_after=None if child else GIVE_UP_AFTER)
+    # Open pages are told when the launcher stops, and stop reconnecting (D66);
+    # not under --reload: the next child comes back on the same port.
+    server = NoticeServer(uvicorn.Config(app, log_level="warning"), stop_message=None if child else STOPPED_MESSAGE)
     url = f"http://127.0.0.1:{port}/?launch={tokens.issue()}"
 
     def opened() -> None:

@@ -11,7 +11,7 @@ dependencies = [
     "pydantic-settings>=2.16",
     "watchfiles>=0.21",  # --reload
     "tgzr.edge.home_manager>=0.201",  # pid_alive: an exited, uncollected client is not running
-    "tgzr.libs.nice>=0.201",  # tools.native.prepare_native_window
+    "tgzr.libs.nice>=0.203",  # tools.native.prepare_native_window, tools.stop_notice (D66)
     "tgzr.libs.package_management>=0.102",
 ]
 

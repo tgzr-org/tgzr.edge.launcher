@@ -85,6 +85,9 @@ your daily one.
   (60 s), `--port`, `--no-browser`, `--reload` (development, implies `--web`:
   this page restarts when a `.py` file of an editable install or of the `tgzr`
   namespace changes, and the clients it starts get `--reload` too).
+- **Stop** (D66): a browser tab left on this page says the launcher has
+  closed and stops reconnecting, as a client's page does
+  (`tgzr.libs.nice.tools.stop_notice`; not under `--reload`).
 - **Package index of a new client:** `--index-url` (or `TGZR_LAUNCHER_INDEX_URL`,
   a JSON list), else `--default-index-url` (or `TGZR_LAUNCHER_DEFAULT_INDEX_URL`;
   default `https://pi.alpha.tgzr.net/tgzr/beta`), else PyPI when that is empty.
